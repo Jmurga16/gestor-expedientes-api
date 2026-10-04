@@ -57,6 +57,16 @@
       "description": "Access key de la cuenta de Azure Blob Storage."
     },
     {
+      "name": "azure.storage.connection-string",
+      "type": "java.lang.String",
+      "description": "Cadena de conexion del Blob Storage (Azurite). Si se define, reemplaza a la cuenta y la clave."
+    },
+    {
+      "name": "azure.storage.public-endpoint",
+      "type": "java.lang.String",
+      "description": "URL base con la que el navegador accede a los blobs. Vacia, se usa la de la cuenta."
+    },
+    {
       "name": "seed.reset",
       "type": "java.lang.Boolean",
       "description": "Con el perfil seed, recarga las colecciones que ya tienen datos en vez de omitirlas.",

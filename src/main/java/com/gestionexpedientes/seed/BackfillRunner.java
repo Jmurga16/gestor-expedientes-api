@@ -3,6 +3,7 @@ package com.gestionexpedientes.seed;
 import com.gestionexpedientes.demanda.entity.DemandaEntity;
 import com.gestionexpedientes.demanda.service.BpmnAreas;
 import com.gestionexpedientes.file.service.FileService;
+import com.gestionexpedientes.global.exceptions.AttributeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
@@ -50,7 +51,7 @@ public class BackfillRunner implements CommandLineRunner {
                         new Update().set("idsArea", idsArea),
                         DemandaEntity.class);
                 logger.info("  {} -> {}", demanda.getCaratula(), idsArea);
-            } catch (RuntimeException e) {
+            } catch (RuntimeException | AttributeException e) {
                 fallidos++;
                 logger.warn("  {}: no se pudo leer {} ({})", demanda.getCaratula(), demanda.getUrlBpmn(), e.getMessage());
             }

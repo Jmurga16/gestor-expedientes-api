@@ -2,12 +2,12 @@ package com.gestionexpedientes.seed;
 
 import com.azure.storage.blob.BlobClient;
 import com.azure.storage.blob.BlobContainerClient;
-import com.azure.storage.blob.BlobContainerClientBuilder;
-import com.azure.storage.common.StorageSharedKeyCredential;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gestionexpedientes.counter.service.CounterService;
 import com.gestionexpedientes.demanda.service.BpmnAreas;
+import com.gestionexpedientes.file.FileContainer;
+import com.gestionexpedientes.file.service.BlobStorage;
 import com.gestionexpedientes.tipodemanda.TipoDemanda;
 import org.bson.Document;
 import org.slf4j.Logger;
@@ -62,19 +62,15 @@ public class SeedRunner implements CommandLineRunner {
     private final PasswordEncoder passwordEncoder;
     private final ObjectMapper objectMapper;
     private final ConfigurableApplicationContext context;
+    private final BlobStorage blobStorage;
 
     @Value("${seed.reset:false}")
     private boolean reset;
 
-    @Value("${azure.storage.account-name}")
-    private String accountName;
-
-    @Value("${azure.storage.account-key}")
-    private String accountKey;
-
     public SeedRunner(MongoTemplate mongoTemplate, PasswordEncoder passwordEncoder, ObjectMapper objectMapper,
-                      ConfigurableApplicationContext context) {
+                      ConfigurableApplicationContext context, BlobStorage blobStorage) {
         this.context = context;
+        this.blobStorage = blobStorage;
         this.mongoTemplate = mongoTemplate;
         this.passwordEncoder = passwordEncoder;
         this.objectMapper = objectMapper;
@@ -83,6 +79,9 @@ public class SeedRunner implements CommandLineRunner {
     @Override
     public void run(String... args) throws Exception {
         logger.info("Seed sobre base '{}' (reset={})", mongoTemplate.getDb().getName(), reset);
+
+        for (FileContainer fileContainer : FileContainer.values())
+            container(fileContainer.getContainerName());
 
         seed("area", "com.gestionexpedientes.area.entity.AreaEntity", () -> load("area"));
         seed("tipologia", "com.gestionexpedientes.tipologia.entity.TipologiaEntity", () -> load("tipologia"));
@@ -238,10 +237,7 @@ public class SeedRunner implements CommandLineRunner {
     }
 
     private BlobContainerClient container(String name) {
-        BlobContainerClient container = new BlobContainerClientBuilder()
-                .endpoint(String.format("https://%s.blob.core.windows.net/%s", accountName, name))
-                .credential(new StorageSharedKeyCredential(accountName, accountKey))
-                .buildClient();
+        BlobContainerClient container = blobStorage.container(name);
         if (!container.exists())
             container.create();
         return container;
@@ -253,7 +249,7 @@ public class SeedRunner implements CommandLineRunner {
         try (InputStream in = file.getInputStream()) {
             blob.upload(in, file.contentLength(), true);
         }
-        return blob.getBlobUrl();
+        return blobStorage.publicUrl(blob);
     }
 
     private void createIndexes() {

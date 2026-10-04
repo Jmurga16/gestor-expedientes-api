@@ -3,16 +3,13 @@ package com.gestionexpedientes.file.service;
 import com.azure.core.util.BinaryData;
 import com.azure.core.util.polling.LongRunningOperationStatus;
 import com.azure.storage.blob.BlobClient;
-import com.azure.storage.blob.BlobClientBuilder;
 import com.azure.storage.blob.models.BlobHttpHeaders;
 import com.azure.storage.blob.models.BlobRequestConditions;
 import com.azure.storage.blob.options.BlobParallelUploadOptions;
 import com.azure.storage.blob.sas.BlobSasPermission;
 import com.azure.storage.blob.sas.BlobServiceSasSignatureValues;
-import com.azure.storage.common.StorageSharedKeyCredential;
 import com.gestionexpedientes.file.FileContainer;
 import com.gestionexpedientes.global.exceptions.AttributeException;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
@@ -35,12 +32,11 @@ public class FileService {
     private static final Duration SAS_TTL = Duration.ofMinutes(10);
     private static final Set<String> READABLE_CONTAINERS = Set.of("demanda-imagen", "demanda-bpmn", "workflow-bpmn");
 
-    @Value("${azure.storage.account-name}")
-    private String accountName;
+    private final BlobStorage blobStorage;
 
-    @Value("${azure.storage.account-key}")
-    private String accountKey;
-
+    public FileService(BlobStorage blobStorage) {
+        this.blobStorage = blobStorage;
+    }
 
     public String uploadFile(FileContainer container, MultipartFile file) throws Exception {
         if (file.isEmpty())
@@ -57,19 +53,20 @@ public class FileService {
         if (!matchesContent(extension, content))
             throw new AttributeException("El contenido del archivo no corresponde a su extension.");
 
-        BlobClient blobClient = blobClient(container.getContainerName(), UUID.randomUUID() + "." + extension);
+        BlobClient blobClient = blobStorage.blob(container.getContainerName(), UUID.randomUUID() + "." + extension);
         // If-None-Match: * -> falla si el blob ya existe, nunca sobrescribe.
         BlobParallelUploadOptions options = new BlobParallelUploadOptions(BinaryData.fromBytes(content))
                 .setHeaders(new BlobHttpHeaders().setContentType(contentType))
                 .setRequestConditions(new BlobRequestConditions().setIfNoneMatch("*"));
         blobClient.uploadWithResponse(options, null, null);
 
-        return blobClient.getBlobUrl();
+        return blobStorage.publicUrl(blobClient);
     }
 
     public String copyFileWithNewName(String sourceBlobUrl, String destinationContainer, String blobName) throws Exception {
-        BlobClient destinationBlobClient = blobClient(destinationContainer, blobName);
-        String sourceWithSas = sasUrl(sourceBlobUrl);
+        BlobClient destinationBlobClient = blobStorage.blob(destinationContainer, blobName);
+        BlobClient sourceBlobClient = blobClient(sourceBlobUrl);
+        String sourceWithSas = sourceBlobClient.getBlobUrl() + "?" + sourceBlobClient.generateSas(readSas());
         LongRunningOperationStatus status;
         try {
             status = destinationBlobClient.beginCopy(sourceWithSas, Duration.ofSeconds(1))
@@ -80,7 +77,7 @@ public class FileService {
         }
         if (status != LongRunningOperationStatus.SUCCESSFULLY_COMPLETED)
             throw new AttributeException("No se pudo copiar el diagrama BPMN del workflow.");
-        return destinationBlobClient.getBlobUrl();
+        return blobStorage.publicUrl(destinationBlobClient);
     }
 
     /** Contenedor al que pertenece la URL, validando que sea de la cuenta configurada. */
@@ -90,54 +87,50 @@ public class FileService {
 
     /** URL de lectura firmada y de corta duracion para un blob de la cuenta configurada. */
     public String sasUrl(String blobUrl) throws AttributeException {
-        String[] parts = parse(blobUrl);
-        BlobClient blobClient = blobClient(parts[0], parts[1]);
-        BlobServiceSasSignatureValues values = new BlobServiceSasSignatureValues(
+        BlobClient blobClient = blobClient(blobUrl);
+        return blobStorage.publicUrl(blobClient) + "?" + blobClient.generateSas(readSas());
+    }
+
+    private BlobServiceSasSignatureValues readSas() {
+        return new BlobServiceSasSignatureValues(
                 OffsetDateTime.now().plus(SAS_TTL),
                 new BlobSasPermission().setReadPermission(true));
-        return blobClient.getBlobUrl() + "?" + blobClient.generateSas(values);
+    }
+
+    private BlobClient blobClient(String blobUrl) throws AttributeException {
+        String[] parts = parse(blobUrl);
+        return blobStorage.blob(parts[0], parts[1]);
     }
 
     private String[] parse(String blobUrl) throws AttributeException {
         URI uri;
         try {
             uri = URI.create(blobUrl);
-        } catch (IllegalArgumentException e) {
+        } catch (IllegalArgumentException | NullPointerException e) {
             throw new AttributeException("URL de archivo invalida.");
         }
 
-        if (!String.format("%s.blob.core.windows.net", accountName).equals(uri.getHost()))
+        String base = blobStorage.publicUrl() + "/";
+        String sinConsulta = blobUrl.split("[?#]", 2)[0];
+        if (uri.getRawAuthority() == null || !sinConsulta.startsWith(base))
             throw new AttributeException("URL de archivo no permitida.");
 
-        String path = uri.getRawPath() == null ? "" : uri.getRawPath();
-        String[] segments = path.split("/", 3);
-        if (segments.length < 3 || segments[2].isEmpty() || !READABLE_CONTAINERS.contains(segments[1]))
+        String[] segments = sinConsulta.substring(base.length()).split("/", 2);
+        if (segments.length < 2 || segments[1].isEmpty() || !READABLE_CONTAINERS.contains(segments[0]))
             throw new AttributeException("URL de archivo no permitida.");
 
-        return new String[]{segments[1], URLDecoder.decode(segments[2], StandardCharsets.UTF_8)};
+        return new String[]{segments[0], URLDecoder.decode(segments[1], StandardCharsets.UTF_8)};
     }
 
     /** Lee un blob de la cuenta configurada a partir de su URL completa. */
-    public String readBlobUrl(String blobUrl) {
-        BlobClient blobClient = new BlobClientBuilder()
-                .endpoint(blobUrl)
-                .credential(new StorageSharedKeyCredential(accountName, accountKey))
-                .buildClient();
-        return download(blobClient);
+    public String readBlobUrl(String blobUrl) throws AttributeException {
+        return download(blobClient(blobUrl));
     }
 
     private String download(BlobClient blobClient) {
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
         blobClient.downloadStream(outputStream);
         return new String(outputStream.toByteArray(), StandardCharsets.UTF_8);
-    }
-
-    private BlobClient blobClient(String containerName, String blobName) {
-        return new BlobClientBuilder()
-                .endpoint(String.format("https://%s.blob.core.windows.net/%s", accountName, containerName))
-                .credential(new StorageSharedKeyCredential(accountName, accountKey))
-                .blobName(blobName)
-                .buildClient();
     }
 
     /** Verifica la firma real del archivo, no el content-type que declara el cliente. */
