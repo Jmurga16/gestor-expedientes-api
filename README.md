@@ -2,7 +2,7 @@
 
 Backend de TRAZA, el sistema de mesa de entradas municipal: expedientes que avanzan por un circuito dibujado en BPMN, con traza de quién los movió y cuándo.
 
-Frontend: [gestor-expedientes-web](https://github.com/Jmurga16/gestor-expedientes-web) · Demo: https://gestor-expedientesv1.azurewebsites.net
+Frontend: [gestor-expedientes-web](https://github.com/Jmurga16/gestor-expedientes-web) · Demo: https://traza.devkora.com
 
 ![El modeler BPMN con un carril por área: de acá salen los pasos y las áreas de cada expediente](docs/img/modeler-carriles.png)
 
@@ -112,8 +112,10 @@ La API queda en `http://localhost:8080`. El `.env` no se commitea; en Azure las 
 | `MONGODB_DATABASE` | no | `db_expedientes` | base sobre la que trabaja |
 | `JWT_SECRET` | sí | — | Base64URL de 32 bytes o más: `openssl rand -base64 48 \| tr '+/' '-_' \| tr -d '='` |
 | `JWT_EXPIRATION` | no | `36000` | vigencia del token en segundos (10 h) |
-| `AZURE_STORAGE_ACCOUNT_NAME` | sí | — | cuenta de Blob Storage |
-| `AZURE_STORAGE_ACCOUNT_KEY` | sí | — | access key de esa cuenta |
+| `AZURE_STORAGE_ACCOUNT_NAME` | sí, sin cadena de conexión | — | cuenta de Blob Storage |
+| `AZURE_STORAGE_ACCOUNT_KEY` | sí, sin cadena de conexión | — | access key de esa cuenta |
+| `AZURE_STORAGE_CONNECTION_STRING` | no | — | cadena de conexión (Azurite); si está, reemplaza a la cuenta y la clave |
+| `AZURE_STORAGE_PUBLIC_ENDPOINT` | no | la URL de la cuenta | base con la que el navegador ve los blobs, p. ej. detrás de un proxy |
 | `CORS_ALLOWED_ORIGINS` | no | `localhost:4200` y la demo | orígenes del front, separados por coma |
 | `LOGIN_MAX_ATTEMPTS` | no | `5` | fallos de login antes de bloquear la IP |
 | `LOGIN_WINDOW_SECONDS` | no | `300` | ventana en la que se cuentan esos fallos |
@@ -132,7 +134,7 @@ Catálogo completo, aproximadamente una decena de workflows con sus BPMN, usuari
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=seed
 ```
 
-Corre, carga y se cierra sola. Salta las colecciones que ya tienen datos; con `SEED_RESET=true` las recarga. Crea los contenedores `workflow-bpmn` y `demanda-bpmn` si faltan y sube los `.bpmn` semilla; `demanda-imagen` hay que crearlo a mano antes de subir el primer adjunto. Los tres son privados: los archivos se sirven siempre con una SAS de 10 minutos por `/file/view`.
+Corre, carga y se cierra sola. Salta las colecciones que ya tienen datos; con `SEED_RESET=true` las recarga. Crea los contenedores `workflow-bpmn`, `demanda-bpmn` y `demanda-imagen` si faltan y sube los `.bpmn` semilla. Los tres son privados: los archivos se sirven siempre con una SAS de 10 minutos por `/file/view`.
 
 Las contraseñas demo están en `src/main/resources/seed/users.json`.
 
@@ -146,4 +148,12 @@ Cubren el control de acceso por rol y por área, el contador atómico, la firma 
 
 ## Despliegue
 
-GitHub Actions publica en Azure App Service con cada push a `main`, autenticando por OIDC contra una identidad administrada — sin publish profile ni secretos de despliegue en el repo.
+La demo corre en un VPS con Docker Compose (`deploy/`): MongoDB, Azurite como Blob Storage, la API y la web, detrás del Caddy común del servidor. Se publica desde la carpeta que contiene los dos repos:
+
+```bash
+bash expedientes-api/deploy/deploy.sh
+```
+
+Se niega si alguno de los dos repos tiene cambios sin commit, sube lo cometido por una sola conexión SSH, reconstruye y espera a que la API responda. Si la base está vacía, la siembra. Cada domingo a las 03:00 de Lima un cron devuelve la base y los archivos al seed (`deploy/sembrar.sh`). Las claves del servidor van en `/opt/traza/.env`, con la forma de `deploy/env.example`.
+
+La versión en Azure App Service con MongoDB Atlas y Blob Storage queda en el tag `demo-azure`. GitHub Actions compila y prueba cada push a `main`; publicar en App Service es manual (*Run workflow*), con OIDC contra una identidad administrada y sin secretos de despliegue en el repo.
