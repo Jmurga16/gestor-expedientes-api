@@ -35,7 +35,8 @@ if [ -d "$EDGE_SITES" ]; then
 fi
 
 for _ in $(seq 60); do
-  if compose exec -T web wget -S -O /dev/null http://127.0.0.1/api/tipo-demanda 2>&1 | grep -q 'HTTP/1.1 40[13]'; then
+  respuesta="$(compose exec -T web wget -S -O /dev/null http://127.0.0.1/api/tipo-demanda 2>&1 || true)"
+  if [[ "$respuesta" == *"HTTP/1.1 40"[13]* ]]; then
     echo "Listo: https://$SITE_HOST con la revisión $REVISION"
     exit 0
   fi
