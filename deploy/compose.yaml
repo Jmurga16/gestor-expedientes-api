@@ -1,0 +1,97 @@
+name: traza
+
+x-logs: &logs
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
+
+x-blob: &cadena-blob DefaultEndpointsProtocol=http;AccountName=traza;AccountKey=${BLOB_KEY:?Falta en .env};BlobEndpoint=http://almacen:10000/traza;
+
+services:
+  db:
+    <<: *logs
+    image: mongo:8.0
+    command: ["--wiredTigerCacheSizeGB", "0.25"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: traza
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?Falta en .env}
+    volumes:
+      - db-data:/data/db
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  almacen:
+    <<: *logs
+    image: mcr.microsoft.com/azure-storage/azurite:3.33.0
+    command: azurite-blob --blobHost 0.0.0.0 --location /data --disableProductStyleUrl --skipApiVersionCheck --silent
+    environment:
+      AZURITE_ACCOUNTS: traza:${BLOB_KEY:?Falta en .env}
+    volumes:
+      - almacen-data:/data
+    networks:
+      default:
+        aliases:
+          - traza-almacen
+    mem_limit: 256m
+    restart: unless-stopped
+
+  api:
+    <<: *logs
+    build: ..
+    environment:
+      MONGODB_URI: mongodb://traza:${MONGO_PASSWORD:?Falta en .env}@db:27017/?authSource=admin
+      MONGODB_DATABASE: db_expedientes
+      JWT_SECRET: ${JWT_SECRET:?Falta en .env}
+      AZURE_STORAGE_CONNECTION_STRING: *cadena-blob
+      AZURE_STORAGE_PUBLIC_ENDPOINT: ${PUBLIC_URL:-https://${SITE_HOST:?Falta en .env}}/almacen/traza
+      CORS_ALLOWED_ORIGINS: ${PUBLIC_URL:-https://${SITE_HOST:?Falta en .env}}
+      SEED_RESET: ${SEED_RESET:-false}
+    depends_on:
+      db:
+        condition: service_healthy
+      almacen:
+        condition: service_started
+    networks:
+      default:
+        aliases:
+          - traza-api
+    mem_limit: 768m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -S -O /dev/null http://127.0.0.1:8080/tipo-demanda 2>&1 | grep -q 'HTTP/1.1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  web:
+    <<: *logs
+    build:
+      context: ../../expedientes-web
+      args:
+        SITE_URL: ${PUBLIC_URL:-https://${SITE_HOST:?Falta en .env}}
+    depends_on:
+      - api
+    networks:
+      default: {}
+      edge:
+        aliases:
+          - traza-web
+    mem_limit: 128m
+    restart: unless-stopped
+
+networks:
+  edge:
+    external: true
+
+volumes:
+  db-data:
+  almacen-data:
