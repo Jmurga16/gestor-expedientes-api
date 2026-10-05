@@ -1,6 +1,8 @@
 package com.gestionexpedientes.demanda.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.gestionexpedientes.global.entity.EntityId;
+import com.gestionexpedientes.historial_demanda.entity.RegistroHistorial;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.util.Date;
@@ -18,11 +20,14 @@ public class DemandaEntity extends EntityId {
     private Date fechaCreacion;
     private String informacionAdicional;
     private String paso;
+    private String idPaso;
     private String urlBpmn;
     private List<Integer> idsArea;
     private Integer idAreaPaso;
     private int estado;
     private Long version;
+    @JsonIgnore
+    private List<RegistroHistorial> historial;
 
     public DemandaEntity(int id, int idUsuario, String caratula, int idTipoDemanda, int idTipologia, int idSubtipologia, String domicilio, String rutaImagen,
                          String informacionAdicional, String paso, String urlBpmn, List<Integer> idsArea, Date fechaCreacion, int estado) {
@@ -162,6 +167,22 @@ public class DemandaEntity extends EntityId {
 
     public void setIdAreaPaso(Integer idAreaPaso) {
         this.idAreaPaso = idAreaPaso;
+    }
+
+    public String getIdPaso() {
+        return idPaso;
+    }
+
+    public void setIdPaso(String idPaso) {
+        this.idPaso = idPaso;
+    }
+
+    public List<RegistroHistorial> getHistorial() {
+        return historial;
+    }
+
+    public void setHistorial(List<RegistroHistorial> historial) {
+        this.historial = historial;
     }
 
     public long getVersion() {

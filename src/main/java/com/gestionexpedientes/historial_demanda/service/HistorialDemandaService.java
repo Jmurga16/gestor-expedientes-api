@@ -1,62 +1,56 @@
 package com.gestionexpedientes.historial_demanda.service;
 
 import com.gestionexpedientes.demanda.entity.DemandaEntity;
-import com.gestionexpedientes.counter.service.CounterService;
 import com.gestionexpedientes.historial_demanda.dto.HistorialDemandaListDto;
-import com.gestionexpedientes.historial_demanda.entity.HistorialDemandaEntity;
+import com.gestionexpedientes.historial_demanda.entity.RegistroHistorial;
 import com.gestionexpedientes.historial_demanda.repository.IHistorialDemandaRepository;
 import com.gestionexpedientes.user.repository.IUserRepository;
 import org.springframework.stereotype.Service;
 
-import java.util.Date;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-
 @Service
 public class HistorialDemandaService {
     private final IHistorialDemandaRepository historialDemandaRepository;
     private final IUserRepository userRepository;
-    private final CounterService counterService;
 
-    public HistorialDemandaService(IHistorialDemandaRepository historialDemandaRepository, IUserRepository userRepository,
-                                   CounterService counterService) {
+    public HistorialDemandaService(IHistorialDemandaRepository historialDemandaRepository, IUserRepository userRepository) {
         this.historialDemandaRepository = historialDemandaRepository;
         this.userRepository = userRepository;
-        this.counterService = counterService;
     }
 
-    public List<HistorialDemandaListDto> getDatatable(int idDemanda) {
-        List<HistorialDemandaEntity> historial = historialDemandaRepository.findByIdDemanda(idDemanda);
+    public List<HistorialDemandaListDto> getDatatable(DemandaEntity demanda) {
+        List<RegistroHistorial> registros = new ArrayList<>();
+        historialDemandaRepository.findByIdDemanda(demanda.getId()).forEach(item -> registros.add(new RegistroHistorial(
+                item.getIdUsuario(), item.getPaso(), null, item.getEstado(), item.getObservaciones(), item.getFecha())));
+        if (demanda.getHistorial() != null)
+            registros.addAll(demanda.getHistorial());
+        registros.sort(Comparator.comparing(RegistroHistorial::fecha, Comparator.nullsFirst(Comparator.naturalOrder())));
 
-        List<Integer> idsUsuario = historial.stream().map(HistorialDemandaEntity::getIdUsuario).distinct().collect(Collectors.toList());
+        List<Integer> idsUsuario = registros.stream().map(RegistroHistorial::idUsuario).distinct().collect(Collectors.toList());
         Map<Integer, String> nombres = new HashMap<>();
         userRepository.findAllById(idsUsuario).forEach(user -> nombres.put(user.getId(), user.getName() + " " + user.getLastname()));
 
-        return historial.stream()
-                .map(item -> mapToListDto(item, nombres.get(item.getIdUsuario())))
-                .collect(Collectors.toList());
+        List<HistorialDemandaListDto> lista = new ArrayList<>();
+        for (RegistroHistorial registro : registros)
+            lista.add(mapToListDto(lista.size() + 1, registro, nombres.get(registro.idUsuario())));
+        return lista;
     }
 
-    public HistorialDemandaEntity registrar(DemandaEntity demanda, int idUsuario, String observaciones) {
-        int id = counterService.nextId("historial_demanda");
-
-        return historialDemandaRepository.save(new HistorialDemandaEntity(
-                id, idUsuario, demanda.getId(), demanda.getPaso(), demanda.getEstado(), observaciones, new Date()));
-    }
-
-    private HistorialDemandaListDto mapToListDto(HistorialDemandaEntity historialDemanda, String usuario) {
+    private HistorialDemandaListDto mapToListDto(int id, RegistroHistorial registro, String usuario) {
         HistorialDemandaListDto dto = new HistorialDemandaListDto();
-
-        dto.setId(historialDemanda.getId());
-        dto.setPaso(historialDemanda.getPaso());
-        dto.setEstado(historialDemanda.getEstado());
-        dto.setObservaciones(historialDemanda.getObservaciones());
-        dto.setFecha(historialDemanda.getFecha());
+        dto.setId(id);
+        dto.setPaso(registro.paso());
+        dto.setIdPaso(registro.idPaso());
+        dto.setEstado(registro.estado());
+        dto.setObservaciones(registro.observaciones());
+        dto.setFecha(registro.fecha());
         dto.setUsuario(usuario);
-
         return dto;
     }
 }

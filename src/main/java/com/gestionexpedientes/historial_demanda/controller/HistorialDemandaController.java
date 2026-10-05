@@ -23,8 +23,6 @@ public class HistorialDemandaController {
 
     @GetMapping("/{idDemanda}")
     public ResponseEntity<List<HistorialDemandaListDto>> getAll(@PathVariable("idDemanda") int idDemanda) throws ResourceNotFoundException {
-        demandaService.getOne(idDemanda, CurrentUser.get());
-        List<HistorialDemandaListDto> data = historialDemandaService.getDatatable(idDemanda);
-        return ResponseEntity.ok(data);
+        return ResponseEntity.ok(historialDemandaService.getDatatable(demandaService.getOne(idDemanda, CurrentUser.get())));
     }
 }

@@ -6,6 +6,7 @@ public class HistorialDemandaListDto {
     private int id;
     private String Usuario;
     private String paso;
+    private String idPaso;
     private int estado;
     private String observaciones;
     private Date fecha;
@@ -32,6 +33,14 @@ public class HistorialDemandaListDto {
 
     public void setPaso(String paso) {
         this.paso = paso;
+    }
+
+    public String getIdPaso() {
+        return idPaso;
+    }
+
+    public void setIdPaso(String idPaso) {
+        this.idPaso = idPaso;
     }
 
     public int getEstado() {

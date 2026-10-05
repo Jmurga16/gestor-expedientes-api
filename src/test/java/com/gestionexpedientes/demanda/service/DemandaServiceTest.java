@@ -9,12 +9,14 @@ import com.gestionexpedientes.demanda.repository.IDemandaRepository;
 import com.gestionexpedientes.file.service.FileService;
 import com.gestionexpedientes.global.dto.BpmnDto;
 import com.gestionexpedientes.global.exceptions.ConflictException;
-import com.gestionexpedientes.historial_demanda.service.HistorialDemandaService;
+import com.gestionexpedientes.historial_demanda.entity.RegistroHistorial;
 import com.gestionexpedientes.security.service.UserPrincipal;
 import com.gestionexpedientes.subtipologia.repository.ISubTipologiaRepository;
 import com.gestionexpedientes.tipologia.repository.ITipologiaRepository;
 import com.gestionexpedientes.user.repository.IUserRepository;
 import com.gestionexpedientes.workflow.repository.IWorkflowRepository;
+import com.mongodb.client.result.UpdateResult;
+import org.bson.Document;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -26,6 +28,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 
@@ -37,8 +40,8 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -70,13 +73,25 @@ class DemandaServiceTest {
             </b:definitions>
             """;
 
+    private static final String XML_REPETIDO = """
+            <b:definitions xmlns:b="http://www.omg.org/spec/BPMN/20100524/MODEL">
+              <b:process>
+                <b:laneSet>
+                  <b:lane id="Lane_5"><b:flowNodeRef>R1</b:flowNodeRef></b:lane>
+                  <b:lane id="Lane_4"><b:flowNodeRef>R2</b:flowNodeRef></b:lane>
+                </b:laneSet>
+                <b:task id="R1" name="Revisión"/>
+                <b:task id="R2" name="Revisión"/>
+              </b:process>
+            </b:definitions>
+            """;
+
     @Mock private IDemandaRepository demandaRepository;
     @Mock private ITipologiaRepository tipologiaRepository;
     @Mock private ISubTipologiaRepository subtipologiaRepository;
     @Mock private IUserRepository userRepository;
     @Mock private IWorkflowRepository workflowRepository;
     @Mock private FileService fileService;
-    @Mock private HistorialDemandaService historialDemandaService;
     @Mock private CounterService counterService;
     @Mock private MongoTemplate mongoTemplate;
 
@@ -85,7 +100,7 @@ class DemandaServiceTest {
     @BeforeEach
     void setUp() {
         demandaService = new DemandaService(demandaRepository, tipologiaRepository, subtipologiaRepository, userRepository,
-                workflowRepository, fileService, new DemandaAccessService(), historialDemandaService, counterService, mongoTemplate);
+                workflowRepository, fileService, new DemandaAccessService(), counterService, mongoTemplate);
     }
 
     @Test
@@ -114,6 +129,8 @@ class DemandaServiceTest {
 
         assertThat(guardada.getIdsArea()).containsExactly(4, 5);
         assertThat(guardada.getVersion()).isZero();
+        assertThat(guardada.getHistorial()).singleElement()
+                .extracting(RegistroHistorial::paso, RegistroHistorial::estado).containsExactly("Inicio", 1);
     }
 
     @Test
@@ -151,7 +168,8 @@ class DemandaServiceTest {
         assertThat(movida.getPaso()).isEqualTo("Limpieza");
         assertThat(movida.getIdAreaPaso()).isEqualTo(4);
         assertThat(movida.getVersion()).isEqualTo(1);
-        verify(historialDemandaService).registrar(entity, 1, "Motivo QA");
+        assertThat(registroGuardado()).extracting(RegistroHistorial::idUsuario, RegistroHistorial::paso, RegistroHistorial::idPaso, RegistroHistorial::observaciones)
+                .containsExactly(1, "Limpieza", "T2", "Motivo QA");
     }
 
     @Test
@@ -178,7 +196,7 @@ class DemandaServiceTest {
 
         assertThatThrownBy(() -> demandaService.mover(9, movimiento("Limpieza", 3, "Motivo"), referente(4)))
                 .isInstanceOf(AccessDeniedException.class);
-        verify(mongoTemplate, never()).findAndReplace(any(Query.class), any());
+        sinGuardar();
     }
 
     @ParameterizedTest
@@ -203,7 +221,7 @@ class DemandaServiceTest {
                 .hasMessageContaining("motivo del cierre");
         assertThatThrownBy(() -> demandaService.mover(9, movimiento("Finalizado", 3, "Motivo"), admin()))
                 .hasMessageContaining("requiere un estado de cierre");
-        verify(mongoTemplate, never()).findAndReplace(any(Query.class), any());
+        sinGuardar();
     }
 
     @Test
@@ -213,7 +231,7 @@ class DemandaServiceTest {
         aceptarGuardado();
 
         assertThat(demandaService.mover(9, movimiento("Inicio", 6, null), admin()).getEstado()).isEqualTo(6);
-        verify(historialDemandaService).registrar(entity, 1, null);
+        assertThat(registroGuardado().observaciones()).isNull();
     }
 
     @ParameterizedTest
@@ -242,7 +260,7 @@ class DemandaServiceTest {
         assertThatThrownBy(() -> demandaService.mover(9, movimiento("Inspección", 3, "Motivo"), referente(5)))
                 .hasMessageContaining("Solo un administrador puede reabrirlo");
         assertThatThrownBy(() -> demandaService.delete(9, admin())).hasMessageContaining("no puede eliminarse");
-        verify(historialDemandaService, never()).registrar(any(), anyInt(), any());
+        sinGuardar();
     }
 
     @Test
@@ -263,7 +281,7 @@ class DemandaServiceTest {
 
         assertThat(reabierta.getEstado()).isEqualTo(3);
         assertThat(reabierta.getIdAreaPaso()).isEqualTo(5);
-        verify(historialDemandaService).registrar(entity, 1, "Reapertura: Se cerró por error");
+        assertThat(registroGuardado().observaciones()).isEqualTo("Reapertura: Se cerró por error");
     }
 
     @Test
@@ -272,14 +290,14 @@ class DemandaServiceTest {
         DemandaEntity entity = abierta();
         entity.setVersion(3L);
         when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
-        when(mongoTemplate.findAndReplace(any(Query.class), any(DemandaEntity.class))).thenReturn(null);
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(DemandaEntity.class))).thenReturn(UpdateResult.acknowledged(0, 0L, null));
 
         DemandaRequestDto dto = demanda(1, 7, 20);
         dto.setVersion(2L);
         assertThatThrownBy(() -> demandaService.update(9, dto, admin())).isInstanceOf(ConflictException.class);
-        assertThatThrownBy(() -> demandaService.mover(9, new MovimientoDto("Inicio", 6, null, 2L), admin()))
+        assertThatThrownBy(() -> demandaService.mover(9, new MovimientoDto("Inicio", null, 6, null, 2L), admin()))
                 .isInstanceOf(ConflictException.class);
-        verify(historialDemandaService, never()).registrar(any(), anyInt(), any());
+        assertThat(entity.getVersion()).isEqualTo(3);
     }
 
     @Test
@@ -293,7 +311,7 @@ class DemandaServiceTest {
         demandaService.update(9, dto, admin());
 
         ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
-        verify(mongoTemplate).findAndReplace(query.capture(), any(DemandaEntity.class));
+        verify(mongoTemplate).updateFirst(query.capture(), any(Update.class), eq(DemandaEntity.class));
         assertThat(query.getValue().getQueryObject().toJson()).contains("\"version\": 4");
         assertThat(entity.getVersion()).isEqualTo(5);
     }
@@ -326,7 +344,7 @@ class DemandaServiceTest {
 
         assertThatThrownBy(() -> demandaService.update(9, dto, admin())).hasMessageContaining("clasificación");
         assertThat(entity.getDomicilio()).isEqualTo("Calle Falsa 123");
-        verify(mongoTemplate, never()).findAndReplace(any(Query.class), any());
+        sinGuardar();
     }
 
     @Test
@@ -351,11 +369,55 @@ class DemandaServiceTest {
         when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
         UserPrincipal colaborador = new UserPrincipal(4, 5, "colab", "colab", "x", List.of(new SimpleGrantedAuthority("ROLE_COLAB")));
 
+        aceptarGuardado();
         demandaService.observar(9, new ObservacionDto("  Llamé al vecino  "), colaborador);
-        verify(historialDemandaService).registrar(entity, 4, "Llamé al vecino");
+        assertThat(registroGuardado()).extracting(RegistroHistorial::idUsuario, RegistroHistorial::observaciones)
+                .containsExactly(4, "Llamé al vecino");
+        assertThat(updateGuardado().getUpdateObject()).doesNotContainKey("$set");
 
         assertThatThrownBy(() -> demandaService.observar(9, new ObservacionDto("Hola"), usuario()))
                 .isInstanceOf(AccessDeniedException.class);
+    }
+
+    @Test
+    @DisplayName("Con nombres repetidos el paso se identifica por el ID de la tarea")
+    void pasoIdentificadoPorId() throws Exception {
+        DemandaEntity entity = abierta();
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
+        when(fileService.readBlobUrl(entity.getUrlBpmn())).thenReturn(XML_REPETIDO);
+
+        assertThatThrownBy(() -> demandaService.mover(9, movimiento("Revisión", 3, "Motivo"), admin()))
+                .hasMessageContaining("varias tareas");
+
+        aceptarGuardado();
+        DemandaEntity movida = demandaService.mover(9, new MovimientoDto("Revisión", "R2", 3, "Motivo", 0L), admin());
+
+        assertThat(movida.getIdPaso()).isEqualTo("R2");
+        assertThat(movida.getIdAreaPaso()).isEqualTo(4);
+        assertThat(updateGuardado().getUpdateObject().get("$set", Document.class))
+                .containsEntry("idPaso", "R2").containsEntry("idAreaPaso", 4).containsEntry("version", 1L);
+    }
+
+    @Test
+    void idDeTareaInexistenteSeRechaza() throws Exception {
+        DemandaEntity entity = abierta();
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
+        when(fileService.readBlobUrl(entity.getUrlBpmn())).thenReturn(XML_REPETIDO);
+
+        assertThatThrownBy(() -> demandaService.mover(9, new MovimientoDto("Revisión", "Inventado", 3, "Motivo", 0L), admin()))
+                .hasMessageContaining("no pertenece");
+        sinGuardar();
+    }
+
+    @Test
+    void eliminarRegistraLaBajaEnElHistorial() throws Exception {
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(abierta()));
+        aceptarGuardado();
+
+        demandaService.delete(9, admin());
+
+        assertThat(registroGuardado().observaciones()).isEqualTo("Expediente eliminado.");
+        assertThat(updateGuardado().getUpdateObject().get("$set", Document.class)).containsEntry("estado", 0);
     }
 
     @Test
@@ -388,11 +450,25 @@ class DemandaServiceTest {
     }
 
     private void aceptarGuardado() {
-        when(mongoTemplate.findAndReplace(any(Query.class), any(DemandaEntity.class))).thenAnswer(i -> i.getArgument(1));
+        when(mongoTemplate.updateFirst(any(Query.class), any(Update.class), eq(DemandaEntity.class))).thenReturn(UpdateResult.acknowledged(1, 1L, null));
+    }
+
+    private void sinGuardar() {
+        verify(mongoTemplate, never()).updateFirst(any(Query.class), any(Update.class), eq(DemandaEntity.class));
+    }
+
+    private Update updateGuardado() {
+        ArgumentCaptor<Update> update = ArgumentCaptor.forClass(Update.class);
+        verify(mongoTemplate).updateFirst(any(Query.class), update.capture(), eq(DemandaEntity.class));
+        return update.getValue();
+    }
+
+    private RegistroHistorial registroGuardado() {
+        return (RegistroHistorial) updateGuardado().getUpdateObject().get("$push", Document.class).get("historial");
     }
 
     private static MovimientoDto movimiento(String paso, int estado, String observaciones) {
-        return new MovimientoDto(paso, estado, observaciones, 0L);
+        return new MovimientoDto(paso, null, estado, observaciones, 0L);
     }
 
     private static DemandaEntity abierta() {
