@@ -3,7 +3,10 @@ package com.gestionexpedientes.workflow.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gestionexpedientes.counter.service.CounterService;
+import com.gestionexpedientes.demanda.service.BpmnSteps;
+import com.gestionexpedientes.file.service.FileService;
 import com.gestionexpedientes.global.exceptions.AttributeException;
+import com.gestionexpedientes.global.exceptions.ResourceNotFoundException;
 import com.gestionexpedientes.global.service.AbstractCatalogService;
 import com.gestionexpedientes.subtipologia.repository.ISubTipologiaRepository;
 import com.gestionexpedientes.tipodemanda.TipoDemanda;
@@ -24,17 +27,20 @@ public class WorkflowService extends AbstractCatalogService<WorkflowEntity, Work
     private final ITipologiaRepository tipologiaRepository;
     private final ISubTipologiaRepository subtipologiaRepository;
     private final ObjectMapper objectMapper;
+    private final FileService fileService;
 
     public WorkflowService(IWorkflowRepository workflowRepository,
                            ITipologiaRepository tipologiaRepository,
                            ISubTipologiaRepository subtipologiaRepository,
                            ObjectMapper objectMapper,
-                           CounterService counterService) {
+                           CounterService counterService,
+                           FileService fileService) {
         super(workflowRepository, counterService, "workflow");
         this.workflowRepository = workflowRepository;
         this.tipologiaRepository = tipologiaRepository;
         this.subtipologiaRepository = subtipologiaRepository;
         this.objectMapper = objectMapper;
+        this.fileService = fileService;
     }
 
     public List<WorkflowListDto> getAllWithNames() {
@@ -52,7 +58,19 @@ public class WorkflowService extends AbstractCatalogService<WorkflowEntity, Work
                 dto.getIdTipoDemanda(), dto.getIdTipologia(), dto.getIdSubtipologia()))
             throw new AttributeException("Ya existe un flujo con la misma combinación de Tipo de Demanda, Tipologia y Subtipologia.");
 
+        validarCircuito(dto);
         return super.save(dto);
+    }
+
+    @Override
+    public WorkflowEntity update(int id, WorkflowDto dto) throws ResourceNotFoundException, AttributeException {
+        validarCircuito(dto);
+        return super.update(id, dto);
+    }
+
+    private void validarCircuito(WorkflowDto dto) throws AttributeException {
+        if (dto.getBpmn() != null && !dto.getBpmn().isBlank())
+            BpmnSteps.validarSecuencial(fileService.readBlobUrl(dto.getBpmn()));
     }
 
     @Override

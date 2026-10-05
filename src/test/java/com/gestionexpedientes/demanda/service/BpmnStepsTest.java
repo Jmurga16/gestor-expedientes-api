@@ -54,4 +54,41 @@ class BpmnStepsTest {
         assertThat(pasos.areaDe("Firma")).isNull();
         assertThat(pasos.areaDe("Inicio")).isNull();
     }
+
+    @Test
+    void losCircuitosDeLaSemillaSonSecuenciales() throws Exception {
+        for (int i = 1; i <= 14; i++) {
+            String recurso = String.format("/seed/bpmn/workflow-%02d.bpmn", i);
+            BpmnSteps.validarSecuencial(new String(getClass().getResourceAsStream(recurso).readAllBytes(), StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    void rechazaRamasEnParalelo() {
+        assertThatThrownBy(() -> BpmnSteps.validarSecuencial("""
+                <b:definitions xmlns:b="http://www.omg.org/spec/BPMN/20100524/MODEL"><b:process>
+                  <b:parallelGateway id="G1" name="Dividir"/>
+                </b:process></b:definitions>
+                """)).hasMessageContaining("secuencial").hasMessageContaining("Dividir");
+
+        assertThatThrownBy(() -> BpmnSteps.validarSecuencial("""
+                <b:definitions xmlns:b="http://www.omg.org/spec/BPMN/20100524/MODEL"><b:process>
+                  <b:task id="T1" name="Revisión"/><b:task id="T2"/><b:task id="T3"/>
+                  <b:sequenceFlow id="F1" sourceRef="T1" targetRef="T2"/>
+                  <b:sequenceFlow id="F2" sourceRef="T1" targetRef="T3"/>
+                </b:process></b:definitions>
+                """)).hasMessageContaining("varias salidas").hasMessageContaining("Revisión");
+    }
+
+    @Test
+    void admiteDecisionesConCompuertaExclusiva() throws Exception {
+        BpmnSteps.validarSecuencial("""
+                <b:definitions xmlns:b="http://www.omg.org/spec/BPMN/20100524/MODEL"><b:process>
+                  <b:task id="T1"/><b:exclusiveGateway id="G1"/><b:task id="T2"/><b:task id="T3"/>
+                  <b:sequenceFlow id="F1" sourceRef="T1" targetRef="G1"/>
+                  <b:sequenceFlow id="F2" sourceRef="G1" targetRef="T2"/>
+                  <b:sequenceFlow id="F3" sourceRef="G1" targetRef="T3"/>
+                </b:process></b:definitions>
+                """);
+    }
 }
