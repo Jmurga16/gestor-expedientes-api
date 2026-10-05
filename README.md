@@ -21,9 +21,21 @@ Acá se dibuja una vez, en BPMN, con un carril por área. A partir de ahí cada 
    - busca el workflow por la terna — si no existe devuelve `400` con `code=WORKFLOW_NOT_CONFIGURED`;
    - se queda con una copia propia del diagrama para ese expediente;
    - guarda en `idsArea` las áreas que tienen carril en ese diagrama, que es por donde filtran los listados;
+   - guarda en `idAreaPaso` el área responsable del paso actual: la del carril de la tarea; para `Inicio`, la de la primera tarea;
    - registra la primera entrada del historial.
-4. El administrador o el referente del área cambian paso, estado y observaciones. Cada cambio deja historial.
-5. El expediente cierra cuando llega al paso `Finalizado`: desde ahí se le pueden corregir los datos, pero un intento de moverle el paso o el estado devuelve `400`.
+4. El administrador o el referente del área responsable del paso actual lo mueven a cualquier tarea del circuito, hacia adelante o hacia atrás, con motivo obligatorio. Al pasar a una tarea de otro carril, la responsabilidad pasa a esa área. Si el diagrama no tiene carriles por área, puede moverlo cualquier referente del circuito.
+5. Los estados `Cerrado y Resuelto` (4) y `Cerrado sin Resolución` (5) cierran desde cualquier paso y exigen motivo. Un cerrado no admite movimientos ni eliminación; solo el administrador lo reabre, con motivo, y queda registrado. `Finalizado` (7) ya no se acepta para movimientos nuevos; los expedientes que lo tienen siguen cerrados. El paso `Finalizado` exige un estado de cierre.
+
+| Rol | Mover y cerrar | Datos descriptivos | Baja | Observaciones |
+|---|---|---|---|---|
+| Administrador | siempre; único que reabre | siempre | expedientes abiertos | sí |
+| Referente | si su área es responsable del paso actual | mientras su área es responsable | no | sí |
+| Colaborador | no | no | no | sí |
+| Vecino | no | su expediente, mientras sigue en `Inicio`/`Receptada` | ídem | no |
+
+Edición de datos (`PUT /demanda/{id}`), movimiento (`POST /demanda/{id}/movimiento`) y observación (`POST /demanda/{id}/observacion`) son operaciones separadas: un cambio de estado no reenvía domicilio ni imagen. Edición y movimiento llevan la `version` leída y se guardan con una comparación atómica en Mongo; si otro usuario guardó antes, la API responde `409` y no sobrescribe. `GET /demanda/{id}/permisos` dice qué puede hacer el usuario actual con ese expediente.
+
+La clasificación no se puede editar porque determina el circuito. Los workflows inactivos no admiten nuevas altas. El sistema no ejecuta flechas ni condiciones del BPMN: el control está en los permisos, el motivo obligatorio y el historial.
 
 ![La vista del expediente: su copia del diagrama, el cambio de paso y estado, y el historial](docs/img/expediente.png)
 
@@ -88,7 +100,10 @@ Todo pide `Authorization: Bearer <token>` salvo `/auth/**`.
 | `GET` | `/demanda` | autenticado, filtrado por rol |
 | `GET` | `/demanda/export` | autenticado, `.xlsx` con el mismo alcance |
 | `GET` | `/demanda/resumen` | autenticado, totales por estado |
-| `GET·POST·PUT·DELETE` | `/demanda/{id}` | autenticado, con control de acceso por expediente |
+| `GET·POST·PUT·DELETE` | `/demanda/{id}` | autenticado, con control de acceso por expediente; `PUT` exige `version` |
+| `GET` | `/demanda/{id}/permisos` | autenticado, acciones permitidas al usuario actual |
+| `POST` | `/demanda/{id}/movimiento` | administrador o referente responsable del paso; `409` si la versión cambió |
+| `POST` | `/demanda/{id}/observacion` | administrador, referente o colaborador de un área del circuito |
 | `GET` | `/historial-demanda/{idDemanda}` | autenticado |
 | `POST` | `/file/{container}` | autenticado, 2 MB por archivo |
 | `GET` | `/file/view` | autenticado, devuelve una SAS de 10 minutos |
@@ -144,7 +159,7 @@ Las contraseñas demo están en `src/main/resources/seed/users.json`.
 ./mvnw test
 ```
 
-Cubren el control de acceso por rol y por área, el contador atómico, la firma y validación del JWT, el login, la exportación a Excel y el bloqueo de los expedientes finalizados.
+Cubren el control de acceso por rol, por área y por paso, el contador atómico, la firma y validación del JWT, el login, la exportación a Excel, el cierre y la reapertura, y el conflicto de versiones.
 
 ## Despliegue
 
