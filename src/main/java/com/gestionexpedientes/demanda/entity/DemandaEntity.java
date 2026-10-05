@@ -20,7 +20,9 @@ public class DemandaEntity extends EntityId {
     private String paso;
     private String urlBpmn;
     private List<Integer> idsArea;
+    private Integer idAreaPaso;
     private int estado;
+    private Long version;
 
     public DemandaEntity(int id, int idUsuario, String caratula, int idTipoDemanda, int idTipologia, int idSubtipologia, String domicilio, String rutaImagen,
                          String informacionAdicional, String paso, String urlBpmn, List<Integer> idsArea, Date fechaCreacion, int estado) {
@@ -152,6 +154,22 @@ public class DemandaEntity extends EntityId {
 
     public void setEstado(int estado) {
         this.estado = estado;
+    }
+
+    public Integer getIdAreaPaso() {
+        return idAreaPaso;
+    }
+
+    public void setIdAreaPaso(Integer idAreaPaso) {
+        this.idAreaPaso = idAreaPaso;
+    }
+
+    public long getVersion() {
+        return version == null ? 0 : version;
+    }
+
+    public void setVersion(Long version) {
+        this.version = version;
     }
 }
 

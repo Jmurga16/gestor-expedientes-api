@@ -12,6 +12,8 @@ public class DemandaListDto {
     private String tipologia;
     private String subtipologia;
     private int estado;
+    private boolean puedeEditar;
+    private boolean puedeEliminar;
 
     public int getId() {
         return id;
@@ -99,5 +101,21 @@ public class DemandaListDto {
 
     public void setEstado(int estado) {
         this.estado = estado;
+    }
+
+    public boolean isPuedeEditar() {
+        return puedeEditar;
+    }
+
+    public void setPuedeEditar(boolean puedeEditar) {
+        this.puedeEditar = puedeEditar;
+    }
+
+    public boolean isPuedeEliminar() {
+        return puedeEliminar;
+    }
+
+    public void setPuedeEliminar(boolean puedeEliminar) {
+        this.puedeEliminar = puedeEliminar;
     }
 }

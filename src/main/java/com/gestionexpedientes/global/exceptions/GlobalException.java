@@ -35,6 +35,12 @@ public class GlobalException {
                 .body(new MessageDto(HttpStatus.BAD_REQUEST, e.getMessage()));
     }
 
+    @ExceptionHandler(ConflictException.class)
+    public ResponseEntity<MessageDto> conflictException(ConflictException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new MessageDto(HttpStatus.CONFLICT, e.getMessage()));
+    }
+
     @ExceptionHandler(WorkflowNotConfiguredException.class)
     public ResponseEntity<MessageDto> workflowNotConfiguredException(WorkflowNotConfiguredException e) {
         return ResponseEntity.badRequest()
@@ -83,7 +89,7 @@ public class GlobalException {
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<MessageDto> accessDeniedException(AccessDeniedException accessDeniedException) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                .body(new MessageDto(HttpStatus.FORBIDDEN, "cannot access this resource"));
+                .body(new MessageDto(HttpStatus.FORBIDDEN, "No tiene permiso para realizar esta operación."));
     }
 
 }

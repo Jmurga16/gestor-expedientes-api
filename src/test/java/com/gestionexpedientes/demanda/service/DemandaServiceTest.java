@@ -2,10 +2,13 @@ package com.gestionexpedientes.demanda.service;
 
 import com.gestionexpedientes.counter.service.CounterService;
 import com.gestionexpedientes.demanda.dto.DemandaRequestDto;
+import com.gestionexpedientes.demanda.dto.MovimientoDto;
+import com.gestionexpedientes.demanda.dto.ObservacionDto;
 import com.gestionexpedientes.demanda.entity.DemandaEntity;
 import com.gestionexpedientes.demanda.repository.IDemandaRepository;
 import com.gestionexpedientes.file.service.FileService;
 import com.gestionexpedientes.global.dto.BpmnDto;
+import com.gestionexpedientes.global.exceptions.ConflictException;
 import com.gestionexpedientes.historial_demanda.service.HistorialDemandaService;
 import com.gestionexpedientes.security.service.UserPrincipal;
 import com.gestionexpedientes.subtipologia.repository.ISubTipologiaRepository;
@@ -16,10 +19,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 
 import java.text.SimpleDateFormat;
@@ -30,6 +37,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -45,6 +53,22 @@ class DemandaServiceTest {
                     + "<bpmn:lane id=\"Lane_4\" name=\"Servicios Publicos\" />"
                     + "<bpmn:lane id=\"Lane_5\" name=\"Obras Publicas\" />"
                     + "</bpmn:laneSet></bpmn:definitions>";
+    private static final String XML_CIRCUITO = """
+            <b:definitions xmlns:b="http://www.omg.org/spec/BPMN/20100524/MODEL">
+              <b:process>
+                <b:laneSet>
+                  <b:lane id="Lane_Vecino"><b:flowNodeRef>Start</b:flowNodeRef></b:lane>
+                  <b:lane id="Lane_5"><b:flowNodeRef>T1</b:flowNodeRef></b:lane>
+                  <b:lane id="Lane_4"><b:flowNodeRef>T2</b:flowNodeRef></b:lane>
+                </b:laneSet>
+                <b:startEvent id="Start" name="Inicio"/>
+                <b:userTask id="T1" name="Inspección"/>
+                <b:task id="T2" name="Limpieza"/>
+                <b:sequenceFlow id="F1" sourceRef="Start" targetRef="T1"/>
+                <b:sequenceFlow id="F2" sourceRef="T1" targetRef="T2"/>
+              </b:process>
+            </b:definitions>
+            """;
 
     @Mock private IDemandaRepository demandaRepository;
     @Mock private ITipologiaRepository tipologiaRepository;
@@ -89,6 +113,15 @@ class DemandaServiceTest {
         DemandaEntity guardada = guardar(demanda(1, 7, 20), 1L);
 
         assertThat(guardada.getIdsArea()).containsExactly(4, 5);
+        assertThat(guardada.getVersion()).isZero();
+    }
+
+    @Test
+    @DisplayName("Inicio queda a cargo del area de la primera tarea")
+    void inicioACargoDeLaPrimeraTarea() throws Exception {
+        DemandaEntity guardada = guardar(demanda(1, 7, 20), 1L, XML_CIRCUITO);
+
+        assertThat(guardada.getIdAreaPaso()).isEqualTo(5);
     }
 
     @Test
@@ -102,45 +135,249 @@ class DemandaServiceTest {
     }
 
     @Test
-    @DisplayName("Un expediente finalizado no cambia de paso ni de estado")
-    void expedienteFinalizadoNoAvanza() {
-        when(demandaRepository.findById(9)).thenReturn(Optional.of(finalizada()));
+    @DisplayName("Mover a otra tarea registra el motivo y pasa la responsabilidad a su area")
+    void moverValidaElPasoYCambiaElAreaResponsable() throws Exception {
+        DemandaEntity entity = abierta();
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
+        when(fileService.readBlobUrl(entity.getUrlBpmn())).thenReturn(XML_CIRCUITO);
 
-        DemandaRequestDto dto = demanda(1, 7, 20);
-        dto.setPaso("Inspeccion");
-        dto.setEstado(3);
+        assertThatThrownBy(() -> demandaService.mover(9, movimiento("Inventado", 3, "Motivo QA"), admin()))
+                .hasMessageContaining("no pertenece");
+        assertThat(entity.getPaso()).isEqualTo("Inicio");
 
-        assertThatThrownBy(() -> demandaService.update(9, dto, admin()))
-                .hasMessage("El expediente está finalizado, ya no admite cambios de paso ni de estado.");
-        verify(demandaRepository, never()).save(any(DemandaEntity.class));
+        aceptarGuardado();
+        DemandaEntity movida = demandaService.mover(9, movimiento("Limpieza", 3, "Motivo QA"), admin());
+
+        assertThat(movida.getPaso()).isEqualTo("Limpieza");
+        assertThat(movida.getIdAreaPaso()).isEqualTo(4);
+        assertThat(movida.getVersion()).isEqualTo(1);
+        verify(historialDemandaService).registrar(entity, 1, "Motivo QA");
     }
 
     @Test
-    @DisplayName("Un expediente finalizado sigue admitiendo cambios de datos")
-    void expedienteFinalizadoAdmiteDatos() throws Exception {
-        when(demandaRepository.findById(9)).thenReturn(Optional.of(finalizada()));
-        when(demandaRepository.save(any(DemandaEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
+    @DisplayName("El referente solo mueve cuando su area es responsable del paso actual")
+    void referenteSoloMueveDesdeSuPaso() {
+        DemandaAccessService access = new DemandaAccessService();
+        DemandaEntity entity = abierta();
+        entity.setIdAreaPaso(5);
+
+        assertThat(access.canAdvance(entity, referente(5))).isTrue();
+        assertThat(access.canAdvance(entity, referente(4))).isFalse();
+        assertThat(access.canAdvance(entity, referente(99))).isFalse();
+
+        entity.setIdAreaPaso(null);
+        assertThat(access.canAdvance(entity, referente(4))).isTrue();
+        assertThat(access.canAdvance(entity, referente(99))).isFalse();
+    }
+
+    @Test
+    void referenteDeOtraAreaRecibe403AlMover() {
+        DemandaEntity entity = abierta();
+        entity.setIdAreaPaso(5);
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
+
+        assertThatThrownBy(() -> demandaService.mover(9, movimiento("Limpieza", 3, "Motivo"), referente(4)))
+                .isInstanceOf(AccessDeniedException.class);
+        verify(mongoTemplate, never()).findAndReplace(any(Query.class), any());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"ROLE_COLAB", "ROLE_USER"})
+    void rolesDeConsultaNoMueven(String role) {
+        DemandaEntity entity = abierta();
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
+        UserPrincipal user = new UserPrincipal(3, 5, "qa", "qa", "x", List.of(new SimpleGrantedAuthority(role)));
+
+        assertThatThrownBy(() -> demandaService.mover(9, movimiento("Inicio", 3, null), user))
+                .isInstanceOf(AccessDeniedException.class);
+        assertThat(entity.getEstado()).isEqualTo(1);
+    }
+
+    @Test
+    void cambioDePasoYCierreExigenMotivo() {
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(abierta()));
+
+        assertThatThrownBy(() -> demandaService.mover(9, movimiento("Inspección", 3, " "), admin()))
+                .hasMessageContaining("motivo del cambio de paso");
+        assertThatThrownBy(() -> demandaService.mover(9, movimiento("Inicio", 4, null), admin()))
+                .hasMessageContaining("motivo del cierre");
+        assertThatThrownBy(() -> demandaService.mover(9, movimiento("Finalizado", 3, "Motivo"), admin()))
+                .hasMessageContaining("requiere un estado de cierre");
+        verify(mongoTemplate, never()).findAndReplace(any(Query.class), any());
+    }
+
+    @Test
+    void cambioDeEstadoSinCambiarPasoNoExigeMotivo() throws Exception {
+        DemandaEntity entity = abierta();
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
+        aceptarGuardado();
+
+        assertThat(demandaService.mover(9, movimiento("Inicio", 6, null), admin()).getEstado()).isEqualTo(6);
+        verify(historialDemandaService).registrar(entity, 1, null);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, -1, 8, 99})
+    void estadoFueraDeCatalogoNoSeGuarda(int estado) {
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(abierta()));
+
+        assertThatThrownBy(() -> demandaService.mover(9, movimiento("Inicio", estado, "Motivo"), admin()))
+                .hasMessageContaining("entre 1 y 6");
+    }
+
+    @Test
+    void finalizadoYaNoSeUsaParaCerrar() {
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(abierta()));
+
+        assertThatThrownBy(() -> demandaService.mover(9, movimiento("Finalizado", 7, "Motivo"), admin()))
+                .hasMessageContaining("Finalizado ya no se usa");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {4, 5, 7})
+    void cerradoNoSeMueveNiSeEliminaSalvoReaperturaDelAdmin(int estado) {
+        DemandaEntity entity = cerrada(estado);
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
+
+        assertThatThrownBy(() -> demandaService.mover(9, movimiento("Inspección", 3, "Motivo"), referente(5)))
+                .hasMessageContaining("Solo un administrador puede reabrirlo");
+        assertThatThrownBy(() -> demandaService.delete(9, admin())).hasMessageContaining("no puede eliminarse");
+        verify(historialDemandaService, never()).registrar(any(), anyInt(), any());
+    }
+
+    @Test
+    void reaperturaExigeMotivoYUnEstadoAbierto() throws Exception {
+        DemandaEntity entity = cerrada(4);
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
+
+        assertThatThrownBy(() -> demandaService.mover(9, movimiento("Inspección", 3, null), admin()))
+                .hasMessageContaining("motivo de la reapertura");
+        assertThatThrownBy(() -> demandaService.mover(9, movimiento("Inspección", 5, "Error"), admin()))
+                .hasMessageContaining("Para reabrir");
+        assertThatThrownBy(() -> demandaService.mover(9, movimiento("Finalizado", 3, "Error"), admin()))
+                .hasMessageContaining("Para reabrir");
+
+        when(fileService.readBlobUrl(entity.getUrlBpmn())).thenReturn(XML_CIRCUITO);
+        aceptarGuardado();
+        DemandaEntity reabierta = demandaService.mover(9, movimiento("Inspección", 3, "Se cerró por error"), admin());
+
+        assertThat(reabierta.getEstado()).isEqualTo(3);
+        assertThat(reabierta.getIdAreaPaso()).isEqualTo(5);
+        verify(historialDemandaService).registrar(entity, 1, "Reapertura: Se cerró por error");
+    }
+
+    @Test
+    @DisplayName("Si otro usuario guardó antes, responde conflicto y no registra historial")
+    void versionDesactualizadaDevuelveConflicto() {
+        DemandaEntity entity = abierta();
+        entity.setVersion(3L);
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
+        when(mongoTemplate.findAndReplace(any(Query.class), any(DemandaEntity.class))).thenReturn(null);
 
         DemandaRequestDto dto = demanda(1, 7, 20);
-        dto.setPaso("Finalizado");
-        dto.setEstado(7);
+        dto.setVersion(2L);
+        assertThatThrownBy(() -> demandaService.update(9, dto, admin())).isInstanceOf(ConflictException.class);
+        assertThatThrownBy(() -> demandaService.mover(9, new MovimientoDto("Inicio", 6, null, 2L), admin()))
+                .isInstanceOf(ConflictException.class);
+        verify(historialDemandaService, never()).registrar(any(), anyInt(), any());
+    }
+
+    @Test
+    void guardadoAtomicoComparaLaVersionLeida() throws Exception {
+        DemandaEntity entity = abierta();
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
+        aceptarGuardado();
+        DemandaRequestDto dto = demanda(1, 7, 20);
+        dto.setVersion(4L);
+
+        demandaService.update(9, dto, admin());
+
+        ArgumentCaptor<Query> query = ArgumentCaptor.forClass(Query.class);
+        verify(mongoTemplate).findAndReplace(query.capture(), any(DemandaEntity.class));
+        assertThat(query.getValue().getQueryObject().toJson()).contains("\"version\": 4");
+        assertThat(entity.getVersion()).isEqualTo(5);
+    }
+
+    @Test
+    void editarDatosNoTocaPasoNiEstadoYExigeVersion() throws Exception {
+        DemandaEntity entity = cerrada(4);
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
+        DemandaRequestDto dto = demanda(1, 7, 20);
         dto.setDomicilio("Calle Nueva 456");
 
+        assertThatThrownBy(() -> demandaService.update(9, dto, admin())).hasMessageContaining("versión");
+
+        aceptarGuardado();
+        dto.setVersion(0L);
         DemandaEntity actualizada = demandaService.update(9, dto, admin());
 
         assertThat(actualizada.getDomicilio()).isEqualTo("Calle Nueva 456");
         assertThat(actualizada.getPaso()).isEqualTo("Finalizado");
-        assertThat(actualizada.getEstado()).isEqualTo(7);
+        assertThat(actualizada.getEstado()).isEqualTo(4);
+    }
+
+    @Test
+    void cambiarClasificacionNoModificaDatosNiHistorial() {
+        DemandaEntity entity = abierta();
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
+        DemandaRequestDto dto = demanda(1, 8, 20);
+        dto.setDomicilio("No guardar");
+        dto.setVersion(0L);
+
+        assertThatThrownBy(() -> demandaService.update(9, dto, admin())).hasMessageContaining("clasificación");
+        assertThat(entity.getDomicilio()).isEqualTo("Calle Falsa 123");
+        verify(mongoTemplate, never()).findAndReplace(any(Query.class), any());
+    }
+
+    @Test
+    @DisplayName("El vecino edita o elimina su expediente solo mientras no fue tomado")
+    void vecinoSoloAntesDeSerTomado() {
+        DemandaAccessService access = new DemandaAccessService();
+        DemandaEntity entity = abierta();
+
+        assertThat(access.canEdit(entity, usuario())).isTrue();
+        assertThat(access.canDelete(entity, usuario())).isTrue();
+
+        entity.setPaso("Inspección");
+        assertThat(access.canEdit(entity, usuario())).isFalse();
+        assertThat(access.canDelete(entity, usuario())).isFalse();
+        assertThat(access.canDelete(entity, referente(5))).isFalse();
+        assertThat(access.canDelete(entity, admin())).isTrue();
+    }
+
+    @Test
+    void colaboradorAgregaObservacionesPeroElVecinoNo() throws Exception {
+        DemandaEntity entity = abierta();
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
+        UserPrincipal colaborador = new UserPrincipal(4, 5, "colab", "colab", "x", List.of(new SimpleGrantedAuthority("ROLE_COLAB")));
+
+        demandaService.observar(9, new ObservacionDto("  Llamé al vecino  "), colaborador);
+        verify(historialDemandaService).registrar(entity, 4, "Llamé al vecino");
+
+        assertThatThrownBy(() -> demandaService.observar(9, new ObservacionDto("Hola"), usuario()))
+                .isInstanceOf(AccessDeniedException.class);
+    }
+
+    @Test
+    void eliminadoNoPuedeLeerse() {
+        DemandaEntity entity = abierta();
+        entity.setEstado(0);
+        when(demandaRepository.findById(9)).thenReturn(Optional.of(entity));
+        assertThatThrownBy(() -> demandaService.getOne(9, admin())).hasMessage("Registro no encontrado.");
     }
 
     private DemandaEntity guardar(DemandaRequestDto dto, long secuencia) throws Exception {
+        return guardar(dto, secuencia, XML_DOS_AREAS);
+    }
+
+    private DemandaEntity guardar(DemandaRequestDto dto, long secuencia, String xml) throws Exception {
         when(workflowRepository.findBpmnByIdTipoDemandaAndIdTipologiaAndIdSubtipologia(
                 dto.getIdTipoDemanda(), dto.getIdTipologia(), dto.getIdSubtipologia()))
                 .thenReturn(Optional.of(new BpmnDto(BPMN_WORKFLOW)));
         when(counterService.next(anyString())).thenReturn(secuencia);
         when(counterService.nextId("demanda")).thenReturn(9);
         when(fileService.copyFileWithNewName(anyString(), anyString(), anyString())).thenReturn("https://cuenta.blob.core.windows.net/demanda-bpmn/demanda9.bpmn");
-        when(fileService.readBlobUrl(BPMN_WORKFLOW)).thenReturn(XML_DOS_AREAS);
+        when(fileService.readBlobUrl(BPMN_WORKFLOW)).thenReturn(xml);
         when(demandaRepository.save(any(DemandaEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         demandaService.save(dto, usuario());
@@ -150,13 +387,33 @@ class DemandaServiceTest {
         return captor.getValue();
     }
 
+    private void aceptarGuardado() {
+        when(mongoTemplate.findAndReplace(any(Query.class), any(DemandaEntity.class))).thenAnswer(i -> i.getArgument(1));
+    }
+
+    private static MovimientoDto movimiento(String paso, int estado, String observaciones) {
+        return new MovimientoDto(paso, estado, observaciones, 0L);
+    }
+
+    private static DemandaEntity abierta() {
+        return new DemandaEntity(9, 3, "007-PT-2026-00042", 1, 7, 20, "Calle Falsa 123", null,
+                "Sin novedades", "Inicio", "https://cuenta.blob.core.windows.net/demanda-bpmn/demanda9.bpmn",
+                List.of(4, 5), new Date(), 1);
+    }
+
+    private static DemandaEntity cerrada(int estado) {
+        DemandaEntity entity = abierta();
+        entity.setPaso("Finalizado");
+        entity.setEstado(estado);
+        return entity;
+    }
+
     private static DemandaRequestDto demanda(int idTipoDemanda, int idTipologia, int idSubtipologia) {
         DemandaRequestDto dto = new DemandaRequestDto();
         dto.setIdTipoDemanda(idTipoDemanda);
         dto.setIdTipologia(idTipologia);
         dto.setIdSubtipologia(idSubtipologia);
         dto.setDomicilio("Calle Falsa 123");
-        dto.setEstado(1);
         return dto;
     }
 
@@ -165,10 +422,9 @@ class DemandaServiceTest {
                 List.of(new SimpleGrantedAuthority("ROLE_USER")));
     }
 
-    private static DemandaEntity finalizada() {
-        return new DemandaEntity(9, 3, "007-PT-2026-00042", 1, 7, 20, "Calle Falsa 123", null,
-                "Sin novedades", "Finalizado", "https://cuenta.blob.core.windows.net/demanda-bpmn/demanda9.bpmn",
-                List.of(4, 5), new Date(), 7);
+    private static UserPrincipal referente(int idArea) {
+        return new UserPrincipal(5, idArea, "referente@demo.test", "referente@demo.test", "x",
+                List.of(new SimpleGrantedAuthority("ROLE_AREA")));
     }
 
     private static UserPrincipal admin() {

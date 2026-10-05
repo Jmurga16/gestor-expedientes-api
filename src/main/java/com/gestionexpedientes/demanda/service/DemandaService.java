@@ -2,6 +2,9 @@ package com.gestionexpedientes.demanda.service;
 
 import com.gestionexpedientes.demanda.dto.DemandaRequestDto;
 import com.gestionexpedientes.demanda.dto.DemandaListDto;
+import com.gestionexpedientes.demanda.dto.MovimientoDto;
+import com.gestionexpedientes.demanda.dto.ObservacionDto;
+import com.gestionexpedientes.demanda.dto.PermisosDemandaDto;
 import com.gestionexpedientes.counter.service.CounterService;
 import com.gestionexpedientes.file.service.FileService;
 import com.gestionexpedientes.global.dto.BpmnDto;
@@ -9,6 +12,7 @@ import com.gestionexpedientes.global.dto.PageDto;
 import com.gestionexpedientes.demanda.entity.DemandaEntity;
 import com.gestionexpedientes.demanda.repository.IDemandaRepository;
 import com.gestionexpedientes.global.exceptions.AttributeException;
+import com.gestionexpedientes.global.exceptions.ConflictException;
 import com.gestionexpedientes.global.exceptions.WorkflowNotConfiguredException;
 import com.gestionexpedientes.global.exceptions.ResourceNotFoundException;
 import com.gestionexpedientes.historial_demanda.service.HistorialDemandaService;
@@ -27,7 +31,9 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.aggregation.Aggregation;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Service;
+import org.springframework.security.access.AccessDeniedException;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -43,18 +49,19 @@ import java.util.stream.Collectors;
 @Service
 public class DemandaService {
 
-    private static final String PASO_INICIAL = "Inicio";
     private static final String PASO_FINAL = "Finalizado";
     private static final int ESTADO_ELIMINADA = 0;
-    private static final int ESTADO_RECEPTADA = 1;
-    private static final int ESTADO_FINALIZADO = 7;
     private static final int MAX_PAGE_SIZE = 100;
     private static final int MAX_EXPORT_SIZE = 5000;
     private static final Sort ORDEN_BANDEJA = Sort.by(Sort.Direction.DESC, "fechaCreacion").and(Sort.by(Sort.Direction.DESC, "_id"));
     private static final String WORKFLOW_NO_CONFIGURADO =
             "No hay un flujo de trabajo definido para esa combinación de Tipo de Demanda, Tipología y Subtipología.";
-    private static final String DEMANDA_FINALIZADA =
-            "El expediente está finalizado, ya no admite cambios de paso ni de estado.";
+    private static final String DEMANDA_CERRADA =
+            "El expediente está cerrado. Solo un administrador puede reabrirlo.";
+    private static final String SIN_VERSION =
+            "Falta la versión del expediente; vuelva a cargarlo antes de guardar.";
+    private static final String CONFLICTO =
+            "Otro usuario modificó este expediente mientras usted lo tenía abierto. Sus cambios no se guardaron: recargue para ver la versión actual.";
 
     private final IDemandaRepository demandaRepository;
     private final ITipologiaRepository tipologiaRepository;
@@ -98,12 +105,12 @@ public class DemandaService {
         List<DemandaEntity> demandas =
                 mongoTemplate.find(query.with(ORDEN_BANDEJA).skip((long) (page - 1) * size).limit(size), DemandaEntity.class);
 
-        return new PageDto<>(toListDto(demandas), page, size, total);
+        return new PageDto<>(toListDto(demandas, user), page, size, total);
     }
 
     public List<DemandaListDto> getExport(String search, UserPrincipal user) {
         Query query = Query.query(new Criteria().andOperator(alcance(user), busqueda(search)));
-        return toListDto(mongoTemplate.find(query.with(ORDEN_BANDEJA).limit(MAX_EXPORT_SIZE), DemandaEntity.class));
+        return toListDto(mongoTemplate.find(query.with(ORDEN_BANDEJA).limit(MAX_EXPORT_SIZE), DemandaEntity.class), user);
     }
 
     public Map<Integer, Long> getResumen(UserPrincipal user) {
@@ -151,7 +158,7 @@ public class DemandaService {
         return new Criteria().orOperator(opciones.toArray(new Criteria[0]));
     }
 
-    private List<DemandaListDto> toListDto(List<DemandaEntity> demandas) {
+    private List<DemandaListDto> toListDto(List<DemandaEntity> demandas, UserPrincipal user) {
         Map<Integer, UserEntity> usuarios = porId(userRepository.findAllById(ids(demandas, DemandaEntity::getIdUsuario)), UserEntity::getId);
         Map<Integer, TipologiaEntity> tipologias = porId(tipologiaRepository.findAllById(ids(demandas, DemandaEntity::getIdTipologia)), TipologiaEntity::getId);
         Map<Integer, SubTipologiaEntity> subtipologias = porId(subtipologiaRepository.findAllById(ids(demandas, DemandaEntity::getIdSubtipologia)), SubTipologiaEntity::getId);
@@ -160,7 +167,7 @@ public class DemandaService {
                 .map(demanda -> mapToListDto(demanda,
                         usuarios.get(demanda.getIdUsuario()),
                         tipologias.get(demanda.getIdTipologia()),
-                        subtipologias.get(demanda.getIdSubtipologia())))
+                        subtipologias.get(demanda.getIdSubtipologia()), user))
                 .collect(Collectors.toList());
     }
 
@@ -174,7 +181,8 @@ public class DemandaService {
         return map;
     }
 
-    private DemandaListDto mapToListDto(DemandaEntity demanda, UserEntity usuario, TipologiaEntity tipologia, SubTipologiaEntity subtipologia) {
+    private DemandaListDto mapToListDto(DemandaEntity demanda, UserEntity usuario, TipologiaEntity tipologia,
+                                        SubTipologiaEntity subtipologia, UserPrincipal user) {
         DemandaListDto dto = new DemandaListDto();
 
         dto.setId(demanda.getId());
@@ -182,6 +190,8 @@ public class DemandaService {
         dto.setInformacionAdicional(demanda.getInformacionAdicional());
         dto.setPaso(demanda.getPaso());
         dto.setEstado(demanda.getEstado());
+        dto.setPuedeEditar(demandaAccessService.canEdit(demanda, user));
+        dto.setPuedeEliminar(demandaAccessService.canDelete(demanda, user));
 
         if (usuario != null) {
             dto.setDemandante(usuario.getName() + " " + usuario.getLastname());
@@ -201,6 +211,7 @@ public class DemandaService {
     public DemandaEntity getOne(int id, UserPrincipal user) throws ResourceNotFoundException {
 
         DemandaEntity demanda = demandaRepository.findById(id)
+                .filter(item -> item.getEstado() != ESTADO_ELIMINADA)
                 .orElseThrow(() -> new ResourceNotFoundException("Registro no encontrado."));
 
         demandaAccessService.checkAccess(demanda, user);
@@ -214,6 +225,10 @@ public class DemandaService {
         return actives;
     }
 
+    public PermisosDemandaDto getPermisos(int id, UserPrincipal user) throws ResourceNotFoundException {
+        return demandaAccessService.permisos(getOne(id, user), user);
+    }
+
     public DemandaEntity save(DemandaRequestDto dto, UserPrincipal user) throws Exception {
         DemandaEntity demanda = demandaRepository.save(mapTipologiaFromDto(dto, user));
 
@@ -224,41 +239,106 @@ public class DemandaService {
     public DemandaEntity update(int id, DemandaRequestDto dto, UserPrincipal user) throws ResourceNotFoundException, AttributeException {
         DemandaEntity demanda = getOne(id, user);
 
-        demanda.setIdTipoDemanda(dto.getIdTipoDemanda());
-        demanda.setIdTipologia(dto.getIdTipologia());
-        demanda.setIdSubtipologia(dto.getIdSubtipologia());
+        if (!demandaAccessService.canEdit(demanda, user))
+            throw new AccessDeniedException("No tiene permiso para modificar los datos del expediente.");
+        if (!Objects.equals(demanda.getIdTipoDemanda(), dto.getIdTipoDemanda())
+                || !Objects.equals(demanda.getIdTipologia(), dto.getIdTipologia())
+                || !Objects.equals(demanda.getIdSubtipologia(), dto.getIdSubtipologia()))
+            throw new AttributeException("La clasificación del expediente no puede cambiar porque define su circuito BPMN.");
+        if (dto.getVersion() == null)
+            throw new AttributeException(SIN_VERSION);
+
         demanda.setDomicilio(dto.getDomicilio());
         demanda.setRutaImagen(dto.getRutaImagen());
         demanda.setInformacionAdicional(dto.getInformacionAdicional());
 
-        if (demandaAccessService.canAdvance(demanda, user))
-            avanzar(demanda, dto);
-
-        DemandaEntity saved = demandaRepository.save(demanda);
-        historialDemandaService.registrar(saved, user.getId(), dto.getObservaciones());
+        DemandaEntity saved = guardar(demanda, dto.getVersion());
+        historialDemandaService.registrar(saved, user.getId(), "Datos del expediente actualizados.");
         return saved;
     }
 
-    private void avanzar(DemandaEntity demanda, DemandaRequestDto dto) throws AttributeException {
-        if (Objects.equals(demanda.getPaso(), dto.getPaso()) && demanda.getEstado() == dto.getEstado())
-            return;
-
-        if (estaFinalizada(demanda))
-            throw new AttributeException(DEMANDA_FINALIZADA);
-
-        demanda.setPaso(dto.getPaso());
-        demanda.setEstado(dto.getEstado());
-    }
-
-    private static boolean estaFinalizada(DemandaEntity demanda) {
-        return PASO_FINAL.equals(demanda.getPaso()) && demanda.getEstado() == ESTADO_FINALIZADO;
-    }
-
-    public DemandaEntity delete(int id, UserPrincipal user) throws ResourceNotFoundException {
+    public DemandaEntity mover(int id, MovimientoDto dto, UserPrincipal user) throws ResourceNotFoundException, AttributeException {
         DemandaEntity demanda = getOne(id, user);
+        boolean reapertura = DemandaAccessService.esTerminal(demanda.getEstado());
 
+        if (reapertura && !demandaAccessService.canReopen(demanda, user))
+            throw new AttributeException(DEMANDA_CERRADA);
+        if (!reapertura && !demandaAccessService.canAdvance(demanda, user))
+            throw new AccessDeniedException("No tiene permiso para cambiar paso ni estado.");
+
+        int estado = dto.estado();
+        if (estado == DemandaAccessService.ESTADO_FINALIZADO)
+            throw new AttributeException("El estado Finalizado ya no se usa: elija Cerrado y Resuelto o Cerrado sin Resolución.");
+        if (estado < 1 || estado > 6)
+            throw new AttributeException("El estado debe estar entre 1 y 6.");
+
+        boolean cambiaPaso = !Objects.equals(demanda.getPaso(), dto.paso());
+        boolean cierra = DemandaAccessService.esTerminal(estado);
+        String motivo = dto.observaciones() == null ? "" : dto.observaciones().trim();
+
+        if (!cambiaPaso && estado == demanda.getEstado())
+            throw new AttributeException("No hay cambios de paso ni de estado.");
+        if (reapertura && (cierra || PASO_FINAL.equals(dto.paso())))
+            throw new AttributeException("Para reabrir elija un paso del circuito y un estado abierto.");
+        if (PASO_FINAL.equals(dto.paso()) && !cierra)
+            throw new AttributeException("El paso Finalizado requiere un estado de cierre.");
+        if (motivo.isEmpty() && (reapertura || cierra || cambiaPaso))
+            throw new AttributeException(reapertura ? "Indique el motivo de la reapertura."
+                    : cierra ? "Indique el motivo del cierre en Observaciones."
+                    : "Indique el motivo del cambio de paso en Observaciones.");
+
+        if (cambiaPaso)
+            demanda.setIdAreaPaso(areaDelPaso(demanda, dto.paso()));
+        demanda.setPaso(dto.paso());
+        demanda.setEstado(estado);
+
+        DemandaEntity saved = guardar(demanda, dto.version());
+        historialDemandaService.registrar(saved, user.getId(),
+                reapertura ? "Reapertura: " + motivo : motivo.isEmpty() ? null : motivo);
+        return saved;
+    }
+
+    public void observar(int id, ObservacionDto dto, UserPrincipal user) throws ResourceNotFoundException {
+        DemandaEntity demanda = getOne(id, user);
+        if (!demandaAccessService.canObserve(demanda, user))
+            throw new AccessDeniedException("No tiene permiso para agregar observaciones.");
+
+        historialDemandaService.registrar(demanda, user.getId(), dto.observaciones().trim());
+    }
+
+    private Integer areaDelPaso(DemandaEntity demanda, String paso) throws AttributeException {
+        if (PASO_FINAL.equals(paso))
+            return null;
+
+        BpmnSteps.Pasos pasos = BpmnSteps.leer(fileService.readBlobUrl(demanda.getUrlBpmn()));
+        if (!BpmnSteps.PASO_INICIAL.equals(paso) && !pasos.tareas().contains(paso))
+            throw new AttributeException("El paso no pertenece al circuito BPMN del expediente.");
+        return pasos.areaDe(paso);
+    }
+
+    private DemandaEntity guardar(DemandaEntity demanda, long versionLeida) {
+        Criteria version = versionLeida == 0
+                ? new Criteria().orOperator(Criteria.where("version").is(0L), Criteria.where("version").exists(false))
+                : Criteria.where("version").is(versionLeida);
+        Query query = Query.query(new Criteria().andOperator(Criteria.where("_id").is(demanda.getId()), version));
+
+        demanda.setVersion(versionLeida + 1);
+        if (mongoTemplate.findAndReplace(query, demanda) == null)
+            throw new ConflictException(CONFLICTO);
+        return demanda;
+    }
+
+    public DemandaEntity delete(int id, UserPrincipal user) throws ResourceNotFoundException, AttributeException {
+        DemandaEntity demanda = getOne(id, user);
+        if (DemandaAccessService.esTerminal(demanda.getEstado()))
+            throw new AttributeException("Un expediente cerrado o finalizado no puede eliminarse.");
+        if (!demandaAccessService.canDelete(demanda, user))
+            throw new AccessDeniedException("No tiene permiso para eliminar el expediente.");
+
+        mongoTemplate.updateFirst(Query.query(Criteria.where("_id").is(id)),
+                new Update().set("estado", ESTADO_ELIMINADA).inc("version", 1), DemandaEntity.class);
         demanda.setEstado(ESTADO_ELIMINADA);
-        return demandaRepository.save(demanda);
+        return demanda;
     }
 
     private DemandaEntity mapTipologiaFromDto(DemandaRequestDto dto, UserPrincipal user) throws Exception {
@@ -275,9 +355,20 @@ public class DemandaService {
         String container = "demanda-bpmn";
 
         String bpmnDemanda = fileService.copyFileWithNewName(urlBPMN, container, newNameBpmn);
-        List<Integer> idsArea = BpmnAreas.parse(fileService.readBlobUrl(urlBPMN));
+        String xml = fileService.readBlobUrl(urlBPMN);
 
-        return new DemandaEntity(id, user.getId(), caratula, dto.getIdTipoDemanda(), dto.getIdTipologia(), dto.getIdSubtipologia(), dto.getDomicilio(), dto.getRutaImagen(), dto.getInformacionAdicional(), PASO_INICIAL, bpmnDemanda, idsArea, fechaCreacion, ESTADO_RECEPTADA);
+        DemandaEntity demanda = new DemandaEntity(id, user.getId(), caratula, dto.getIdTipoDemanda(), dto.getIdTipologia(), dto.getIdSubtipologia(), dto.getDomicilio(), dto.getRutaImagen(), dto.getInformacionAdicional(), BpmnSteps.PASO_INICIAL, bpmnDemanda, BpmnAreas.parse(xml), fechaCreacion, DemandaAccessService.ESTADO_RECEPTADA);
+        demanda.setIdAreaPaso(areaInicial(xml));
+        demanda.setVersion(0L);
+        return demanda;
+    }
+
+    private static Integer areaInicial(String xml) {
+        try {
+            return BpmnSteps.leer(xml).areaDe(BpmnSteps.PASO_INICIAL);
+        } catch (AttributeException e) {
+            return null;
+        }
     }
 
     private String setCaratula(DemandaRequestDto dto) throws AttributeException {

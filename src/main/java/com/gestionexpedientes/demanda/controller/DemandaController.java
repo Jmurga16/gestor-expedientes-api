@@ -2,6 +2,9 @@ package com.gestionexpedientes.demanda.controller;
 
 import com.gestionexpedientes.demanda.dto.DemandaRequestDto;
 import com.gestionexpedientes.demanda.dto.DemandaListDto;
+import com.gestionexpedientes.demanda.dto.MovimientoDto;
+import com.gestionexpedientes.demanda.dto.ObservacionDto;
+import com.gestionexpedientes.demanda.dto.PermisosDemandaDto;
 import com.gestionexpedientes.demanda.entity.DemandaEntity;
 import com.gestionexpedientes.demanda.service.DemandaExcelService;
 import com.gestionexpedientes.demanda.service.DemandaService;
@@ -69,6 +72,11 @@ public class DemandaController {
         return ResponseEntity.ok(demandaService.getOne(id, CurrentUser.get()));
     }
 
+    @GetMapping("/{id}/permisos")
+    public ResponseEntity<PermisosDemandaDto> getPermisos(@PathVariable("id") int id) throws ResourceNotFoundException {
+        return ResponseEntity.ok(demandaService.getPermisos(id, CurrentUser.get()));
+    }
+
     @PostMapping
     public ResponseEntity<Map<String, Object>> save(@Valid @RequestBody DemandaRequestDto dto) throws Exception {
         DemandaEntity demanda = demandaService.save(dto, CurrentUser.get());
@@ -89,8 +97,20 @@ public class DemandaController {
         return ResponseEntity.ok(new MessageDto(HttpStatus.OK, message));
     }
 
+    @PostMapping("/{id}/movimiento")
+    public ResponseEntity<MessageDto> mover(@PathVariable("id") int id, @Valid @RequestBody MovimientoDto dto) throws ResourceNotFoundException, AttributeException {
+        DemandaEntity demanda = demandaService.mover(id, dto, CurrentUser.get());
+        return ResponseEntity.ok(new MessageDto(HttpStatus.OK, demanda.getCaratula() + " ha sido actualizado"));
+    }
+
+    @PostMapping("/{id}/observacion")
+    public ResponseEntity<MessageDto> observar(@PathVariable("id") int id, @Valid @RequestBody ObservacionDto dto) throws ResourceNotFoundException {
+        demandaService.observar(id, dto, CurrentUser.get());
+        return ResponseEntity.ok(new MessageDto(HttpStatus.OK, "Observación registrada en el historial"));
+    }
+
     @DeleteMapping("/{id}")
-    public ResponseEntity<MessageDto> delete(@PathVariable("id") int id) throws ResourceNotFoundException {
+    public ResponseEntity<MessageDto> delete(@PathVariable("id") int id) throws ResourceNotFoundException, AttributeException {
         DemandaEntity demanda = demandaService.delete(id, CurrentUser.get());
         String message = demanda.getCaratula() + " ha sido eliminado";
         return ResponseEntity.ok(new MessageDto(HttpStatus.OK, message));

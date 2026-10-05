@@ -15,11 +15,8 @@ public class DemandaRequestDto {
     private String domicilio;
     private String rutaImagen;
     private String informacionAdicional;
-    private String paso;
     private String urlBpmn;
-    @NotNull(message = "Estado es obligatorio")
-    private Integer estado;
-    private String observaciones;
+    private Long version;
 
     public DemandaRequestDto() {
     }
@@ -88,14 +85,6 @@ public class DemandaRequestDto {
         this.informacionAdicional = informacionAdicional;
     }
 
-    public String getPaso() {
-        return paso;
-    }
-
-    public void setPaso(String paso) {
-        this.paso = paso;
-    }
-
     public String getUrlBpmn() {
         return urlBpmn;
     }
@@ -104,19 +93,11 @@ public class DemandaRequestDto {
         this.urlBpmn = urlBpmn;
     }
 
-    public Integer getEstado() {
-        return estado;
+    public Long getVersion() {
+        return version;
     }
 
-    public void setEstado(Integer estado) {
-        this.estado = estado;
-    }
-
-    public String getObservaciones() {
-        return observaciones;
-    }
-
-    public void setObservaciones(String observaciones) {
-        this.observaciones = observaciones;
+    public void setVersion(Long version) {
+        this.version = version;
     }
 }
