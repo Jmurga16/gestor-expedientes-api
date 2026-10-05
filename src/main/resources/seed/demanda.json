@@ -70,6 +70,13 @@
         "paso": "Programación de cuadrilla",
         "estado": 6,
         "observaciones": "Pendiente de disponibilidad de materiales."
+      },
+      {
+        "minutosAtras": 3100,
+        "idUsuario": 4,
+        "paso": "Programación de cuadrilla",
+        "estado": 6,
+        "observaciones": "Consulté con el depósito: el asfalto en frío llega la semana próxima."
       }
     ]
   },
@@ -102,7 +109,15 @@
     "domicilio": "Calle Las Heras 480",
     "informacionAdicional": "Bache que se agrandó después de la última lluvia.",
     "minutosAtras": 4262,
-    "movimientos": []
+    "movimientos": [
+      {
+        "minutosAtras": 2890,
+        "idUsuario": 3,
+        "paso": "Inspección del bache",
+        "estado": 1,
+        "observaciones": "Recibido en Obras Públicas, se coordina la visita al lugar."
+      }
+    ]
   },
   {
     "idWorkflow": 9,
@@ -581,7 +596,15 @@
     "domicilio": "Av. Costanera 900",
     "informacionAdicional": "Árbol inclinado sobre la calzada.",
     "minutosAtras": 2511,
-    "movimientos": []
+    "movimientos": [
+      {
+        "minutosAtras": 1460,
+        "idUsuario": 5,
+        "paso": "Inspección del árbol",
+        "estado": 3,
+        "observaciones": "La cuadrilla de arbolado revisa la inclinación y el riesgo de caída."
+      }
+    ]
   },
   {
     "idWorkflow": 10,

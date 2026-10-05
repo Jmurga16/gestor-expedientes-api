@@ -6,6 +6,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gestionexpedientes.counter.service.CounterService;
 import com.gestionexpedientes.demanda.service.BpmnAreas;
+import com.gestionexpedientes.demanda.service.BpmnSteps;
 import com.gestionexpedientes.file.FileContainer;
 import com.gestionexpedientes.file.service.BlobStorage;
 import com.gestionexpedientes.tipodemanda.TipoDemanda;
@@ -197,8 +198,13 @@ public class SeedRunner implements CommandLineRunner {
             demanda.put("informacionAdicional", row.get("informacionAdicional"));
             demanda.put("paso", paso);
             demanda.put("urlBpmn", urlBpmn);
-            demanda.put("idsArea", BpmnAreas.parse(texto("seed/bpmn/" + workflow.get("bpmnBlob"))));
+            String xml = texto("seed/bpmn/" + workflow.get("bpmnBlob"));
+            demanda.put("idsArea", BpmnAreas.parse(xml));
+            Integer idAreaPaso = BpmnSteps.leer(xml).areaDe(paso);
+            if (idAreaPaso != null)
+                demanda.put("idAreaPaso", idAreaPaso);
             demanda.put("estado", estado);
+            demanda.put("version", 0L);
             demandas.add(demanda);
         }
 
