@@ -58,6 +58,7 @@ public class SeedRunner implements CommandLineRunner {
     private static final String WORKFLOW_CONTAINER = "workflow-bpmn";
     private static final String DEMANDA_CONTAINER = "demanda-bpmn";
     private static final String COUNTERS = "counters";
+    private static final String HISTORIAL_ANTERIOR = "historial_demanda";
 
     private final MongoTemplate mongoTemplate;
     private final PasswordEncoder passwordEncoder;
@@ -95,7 +96,7 @@ public class SeedRunner implements CommandLineRunner {
         logger.info("Seed finalizado.");
         if (reset) {
             logger.warn("SEED_RESET aplicado: los blobs anteriores a este seed quedaron huerfanos en Azure Blob Storage.");
-            logger.warn("Limpieza: correr _auditoria/limpiar-blobs.ps1 (lista) y despues con -Borrar.");
+            logger.warn("Limpieza: correr _auditoria/scripts/limpiar-blobs.ps1 (lista) y despues con -Borrar.");
             logger.warn("Si el script no existe: borrar en workflow-bpmn, demanda-bpmn y demanda-imagen todo blob con fecha anterior a workflow-01.bpmn.");
         }
         System.exit(SpringApplication.exit(context, () -> 0));
@@ -158,7 +159,6 @@ public class SeedRunner implements CommandLineRunner {
         long now = System.currentTimeMillis();
 
         List<Map<String, Object>> demandas = new ArrayList<>();
-        List<Map<String, Object>> historial = new ArrayList<>();
         Map<String, Long> secuencias = new TreeMap<>();
 
         List<Map<String, Object>> rows = load("demanda");
@@ -173,15 +173,20 @@ public class SeedRunner implements CommandLineRunner {
             String caratula = caratula(workflow, fechaCreacion, secuencias);
             String blobName = "demanda" + id + ".bpmn";
             String urlBpmn = upload(container, blobName, "seed/bpmn/" + workflow.get("bpmnBlob"));
+            String xml = texto("seed/bpmn/" + workflow.get("bpmnBlob"));
+            BpmnSteps.Pasos pasos = BpmnSteps.leer(xml);
 
-            historial.add(historial(historial.size() + 1, idUsuario, id, "Inicio", 1, null, fechaCreacion));
+            List<Map<String, Object>> historial = new ArrayList<>();
+            historial.add(historial(idUsuario, BpmnSteps.PASO_INICIAL, null, 1, null, fechaCreacion));
 
-            String paso = "Inicio";
+            String paso = BpmnSteps.PASO_INICIAL;
+            String idPaso = null;
             int estado = 1;
             for (Map<String, Object> movimiento : (List<Map<String, Object>>) row.get("movimientos")) {
                 paso = (String) movimiento.get("paso");
+                idPaso = idPaso(pasos, paso);
                 estado = (Integer) movimiento.get("estado");
-                historial.add(historial(historial.size() + 1, (Integer) movimiento.get("idUsuario"), id, paso, estado,
+                historial.add(historial((Integer) movimiento.get("idUsuario"), paso, idPaso, estado,
                         (String) movimiento.get("observaciones"), haceMinutos(now, movimiento.get("minutosAtras"))));
             }
 
@@ -197,20 +202,23 @@ public class SeedRunner implements CommandLineRunner {
             demanda.put("fechaCreacion", fechaCreacion);
             demanda.put("informacionAdicional", row.get("informacionAdicional"));
             demanda.put("paso", paso);
+            if (idPaso != null)
+                demanda.put("idPaso", idPaso);
             demanda.put("urlBpmn", urlBpmn);
-            String xml = texto("seed/bpmn/" + workflow.get("bpmnBlob"));
             demanda.put("idsArea", BpmnAreas.parse(xml));
-            Integer idAreaPaso = BpmnSteps.leer(xml).areaDe(paso);
+            Integer idAreaPaso = idPaso != null ? pasos.areaDeTarea(idPaso) : pasos.areaDe(paso);
             if (idAreaPaso != null)
                 demanda.put("idAreaPaso", idAreaPaso);
             demanda.put("estado", estado);
             demanda.put("version", 0L);
+            demanda.put("historial", historial);
             demandas.add(demanda);
         }
 
         mongoTemplate.remove(Query.query(Criteria.where("_id").not().regex("^" + CounterService.ID_PREFIX)), COUNTERS);
         insert("demanda", "com.gestionexpedientes.demanda.entity.DemandaEntity", demandas);
-        insert("historial_demanda", "com.gestionexpedientes.historial_demanda.entity.HistorialDemandaEntity", historial);
+        mongoTemplate.dropCollection(HISTORIAL_ANTERIOR);
+        mongoTemplate.remove(Query.query(Criteria.where("_id").is(CounterService.ID_PREFIX + HISTORIAL_ANTERIOR)), COUNTERS);
         secuencias.forEach((key, seq) -> mongoTemplate.getCollection(COUNTERS).insertOne(new Document("_id", key).append("seq", seq)));
         logger.info("  counters: {} secuencias de caratula", secuencias.size());
     }
@@ -226,12 +234,21 @@ public class SeedRunner implements CommandLineRunner {
         return codigoTipologia + "-" + tipoDemanda + "-" + anio + "-" + String.format("%05d", secuencia);
     }
 
-    private static Map<String, Object> historial(int id, int idUsuario, int idDemanda, String paso, int estado, String observaciones, Date fecha) {
+    private static String idPaso(BpmnSteps.Pasos pasos, String paso) {
+        if (BpmnSteps.PASO_INICIAL.equals(paso) || "Finalizado".equals(paso))
+            return null;
+        List<String> ids = pasos.idsDe(paso);
+        if (ids.size() != 1)
+            throw new IllegalStateException("El paso '" + paso + "' no identifica una única tarea del BPMN");
+        return ids.get(0);
+    }
+
+    private static Map<String, Object> historial(int idUsuario, String paso, String idPaso, int estado, String observaciones, Date fecha) {
         Map<String, Object> row = new TreeMap<>();
-        row.put("_id", id);
         row.put("idUsuario", idUsuario);
-        row.put("idDemanda", idDemanda);
         row.put("paso", paso);
+        if (idPaso != null)
+            row.put("idPaso", idPaso);
         row.put("estado", estado);
         row.put("observaciones", observaciones);
         row.put("fecha", fecha);
@@ -273,7 +290,6 @@ public class SeedRunner implements CommandLineRunner {
         mongoTemplate.indexOps("demanda").createIndex(new Index().on("estado", Sort.Direction.ASC));
         mongoTemplate.indexOps("demanda").createIndex(new Index().on("fechaCreacion", Sort.Direction.DESC));
         mongoTemplate.indexOps("demanda").createIndex(new Index().on("idsArea", Sort.Direction.ASC));
-        mongoTemplate.indexOps("historial_demanda").createIndex(new Index().on("idDemanda", Sort.Direction.ASC));
         logger.info("  indices creados");
     }
 

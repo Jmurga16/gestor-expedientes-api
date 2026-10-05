@@ -2,6 +2,7 @@ package com.gestionexpedientes.seed;
 
 import com.gestionexpedientes.demanda.entity.DemandaEntity;
 import com.gestionexpedientes.demanda.service.BpmnAreas;
+import com.gestionexpedientes.demanda.service.BpmnSteps;
 import com.gestionexpedientes.file.service.FileService;
 import com.gestionexpedientes.global.exceptions.AttributeException;
 import org.slf4j.Logger;
@@ -58,9 +59,40 @@ public class BackfillRunner implements CommandLineRunner {
         }
 
         mongoTemplate.indexOps("demanda").createIndex(new Index().on("idsArea", Sort.Direction.ASC));
+        fallidos += completarPasos();
         logger.info("Backfill finalizado ({} sin resolver).", fallidos);
 
         int salida = fallidos == 0 ? 0 : 1;
         System.exit(SpringApplication.exit(context, () -> salida));
+    }
+
+    private int completarPasos() {
+        List<DemandaEntity> pendientes = mongoTemplate.find(Query.query(Criteria.where("idAreaPaso").exists(false)
+                .and("paso").ne("Finalizado").and("estado").ne(0)), DemandaEntity.class);
+        logger.info("Backfill de idPaso e idAreaPaso: {} expedientes", pendientes.size());
+
+        int fallidos = 0;
+        for (DemandaEntity demanda : pendientes) {
+            try {
+                BpmnSteps.Pasos pasos = BpmnSteps.leer(fileService.readBlobUrl(demanda.getUrlBpmn()));
+                List<String> ids = pasos.idsDe(demanda.getPaso());
+                String idPaso = ids.size() == 1 ? ids.get(0) : null;
+                Integer idArea = BpmnSteps.PASO_INICIAL.equals(demanda.getPaso()) ? pasos.areaInicial()
+                        : idPaso != null ? pasos.areaDeTarea(idPaso) : null;
+
+                Update update = new Update();
+                if (idPaso != null)
+                    update.set("idPaso", idPaso);
+                if (idArea != null)
+                    update.set("idAreaPaso", idArea);
+                if (!update.getUpdateObject().isEmpty())
+                    mongoTemplate.updateFirst(Query.query(Criteria.where("_id").is(demanda.getId())), update, DemandaEntity.class);
+                logger.info("  {} -> paso {} / area {}", demanda.getCaratula(), idPaso, idArea);
+            } catch (RuntimeException | AttributeException e) {
+                fallidos++;
+                logger.warn("  {}: no se pudo leer {} ({})", demanda.getCaratula(), demanda.getUrlBpmn(), e.getMessage());
+            }
+        }
+        return fallidos;
     }
 }
