@@ -11,6 +11,9 @@ public interface IWorkflowRepository extends ICatalogRepository<WorkflowEntity> 
 
     boolean existsByIdTipoDemandaAndIdTipologiaAndIdSubtipologia(Integer idTipoDemanda, Integer idTipologia, Integer idSubtipologia);
 
-    @Query(value = "{ 'idTipoDemanda': ?0, 'idTipologia': ?1, 'idSubtipologia': ?2 }", fields = "{ 'bpmn': 1 }")
+    boolean existsByIdTipoDemandaAndIdTipologiaAndIdSubtipologiaAndEstado(Integer idTipoDemanda, Integer idTipologia,
+                                                                      Integer idSubtipologia, int estado);
+
+    @Query(value = "{ 'idTipoDemanda': ?0, 'idTipologia': ?1, 'idSubtipologia': ?2, 'estado': 1 }", fields = "{ 'bpmn': 1 }")
     Optional<BpmnDto> findBpmnByIdTipoDemandaAndIdTipologiaAndIdSubtipologia(Integer idTipoDemanda, Integer idTipologia, Integer idSubtipologia);
 }

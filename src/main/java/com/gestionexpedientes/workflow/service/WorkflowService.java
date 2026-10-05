@@ -42,13 +42,14 @@ public class WorkflowService extends AbstractCatalogService<WorkflowEntity, Work
     }
 
     public boolean exists(int idTipoDemanda, int idTipologia, int idSubtipologia) {
-        return workflowRepository.existsByIdTipoDemandaAndIdTipologiaAndIdSubtipologia(
-                idTipoDemanda, idTipologia, idSubtipologia);
+        return workflowRepository.existsByIdTipoDemandaAndIdTipologiaAndIdSubtipologiaAndEstado(
+                idTipoDemanda, idTipologia, idSubtipologia, ESTADO_ACTIVO);
     }
 
     @Override
     public WorkflowEntity save(WorkflowDto dto) throws AttributeException {
-        if (exists(dto.getIdTipoDemanda(), dto.getIdTipologia(), dto.getIdSubtipologia()))
+        if (workflowRepository.existsByIdTipoDemandaAndIdTipologiaAndIdSubtipologia(
+                dto.getIdTipoDemanda(), dto.getIdTipologia(), dto.getIdSubtipologia()))
             throw new AttributeException("Ya existe un flujo con la misma combinación de Tipo de Demanda, Tipologia y Subtipologia.");
 
         return super.save(dto);
